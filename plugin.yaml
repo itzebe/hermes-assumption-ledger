@@ -1,0 +1,35 @@
+name: assumption-ledger
+version: 0.1.0
+requires_hermes: ">=0.23.0"
+description: >-
+  Persistent operational-assumption verification. Captures assumptions from observable agent
+  activity, preserves their provenance, verifies them with deterministic checks (files, git,
+  env, HTTP, SQLite), and blocks only the decisions that depend on a contradicted assumption.
+  Zero LLM calls; provider errors, timeouts and rate limits yield UNVERIFIED, never INVALIDATED.
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - post_tool_call
+  - pre_verify
+provides_tools:
+  - assumption_record
+  - assumption_check
+  - assumption_status
+  - assumption_decide
+config_schema:
+  freshness_seconds:
+    type: int
+    default: 86400
+    description: >-
+      How long a successful check stays VALID before it degrades to STALE and needs re-checking.
+      A pass is never treated as permanently true.
+  auto_check:
+    type: bool
+    default: true
+    description: >-
+      Re-verify VALID assumptions whose evidence has aged out when the plugin next runs a check.
+  max_reinject:
+    type: int
+    default: 25
+    description: Maximum live assumptions re-injected into context on each turn.
+requires_env: []
