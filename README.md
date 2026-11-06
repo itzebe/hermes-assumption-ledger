@@ -62,9 +62,9 @@ hermes plugins install assumption-ledger
 From this repository:
 
 ```bash
-git clone https://github.com/itzebe/hermes-assumption-ledge
-hermes plugins validate ./hermes-assumption-ledge
-hermes plugins doctor  ./hermes-assumption-ledge
+git clone https://github.com/itzebe/hermes-assumption-ledger
+hermes plugins validate ./hermes-assumption-ledger
+hermes plugins doctor  ./hermes-assumption-ledger
 ```
 
 Then enable it and run Hermes as usual. Records are written to

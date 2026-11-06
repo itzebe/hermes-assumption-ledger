@@ -1,7 +1,8 @@
 # hermes-assumption-ledger — project memory
 
 Hermes Agent plugin (NousResearch Plugin Hackathon, deadline 2026-11-11 17:00 EST).
-Target repo `github.com/itzebe/hermes-assumption-ledger` (does not exist yet — see Blocker).
+Canonical repo `github.com/itzebe/hermes-assumption-ledger` (renamed 2026-11-06 from the
+misspelled `...-ledge`; the old URL 301-redirects and the SHAs did not change).
 Local checkout `/workspace/project`; upstream Hermes reference clone `/tmp/hermes-agent`
 (HEAD `486f4a6a9918a4054373e33a200260ffd501645e`, v0.23.0).
 
@@ -44,14 +45,14 @@ INVALIDATED. `status_after_check()` in `ledger/model.py` is the single implement
 cases; verified **non-vacuous** (injecting ERROR→INVALIDATED fails 4). `hermes plugins validate`
 all 15 checks pass; doctor reports 4 tools + 4 hooks. Local commit `d398e2c` on `master`.
 
-## Blocker — needs the user
-`GITHUB_TOKEN` is fine-grained with **empty x-oauth-scopes**: `POST /user/repos` and
-`gh repo create` both 403 "Resource not accessible by integration", so the target repo cannot be
-created. `GITLAB_TOKEN` is invalid (401). The token *can* push to the 15 existing `itzebe` repos
-(all admin=true). Unblock by creating `itzebe/hermes-assumption-ledger` and granting Contents +
-Administration write, or ship the plugin as a `subdir:` of an existing repo.
+## Published state (2026-11-06)
+- Live at **`github.com/itzebe/hermes-assumption-ledger`** (canonical). The original misspelled
+  name `...-ledge` 301-redirects; the rename did **not** change any commit SHA.
+- MIT, public, default branch `main`.
+- Catalog entry + patch + demo + docs live in `/workspace/submission-prep/`.
 
-## Process
-- Hackathon entry = catalog PR to `NousResearch/hermes-agent` + demo video on X tagging
-  @NousResearch. Judged on usefulness, reliability, creativity.
-- PRs from this environment open as drafts; `gh pr ready <n>` before merge.
+## Blocker — needs the user
+`GITHUB_TOKEN` cannot `POST /user/repos`, `PATCH /repos/...`, `POST /repos/<up>/forks`, or
+`POST /repos/<up>/pulls` — all 403 "Resource not accessible by integration". It **can** push to
+existing `itzebe` repos. So the catalog PR must be opened by the owner, or the token needs
+Administration: write. `GITLAB_TOKEN` is invalid (401).
