@@ -53,16 +53,22 @@ A pass is never assumed to hold forever: `freshness_seconds` (default 86400) bou
 
 ## Install
 
+From the catalog (once listed):
+
 ```
 hermes plugins install assumption-ledger
 ```
 
-Or from a checkout:
+From this repository:
 
+```bash
+git clone https://github.com/itzebe/hermes-assumption-ledge
+hermes plugins validate ./hermes-assumption-ledge
+hermes plugins doctor  ./hermes-assumption-ledge
 ```
-hermes plugins validate /path/to/hermes-assumption-ledger
-hermes plugins doctor  /path/to/hermes-assumption-ledger
-```
+
+Then enable it and run Hermes as usual. Records are written to
+`<hermes home>/plugin-data/assumption-ledger/ledger.db`.
 
 ## Surfaces
 
