@@ -48,8 +48,18 @@ all 15 checks pass; doctor reports 4 tools + 4 hooks. Local commit `d398e2c` on 
 ## Published state (2026-11-06)
 - Live at **`github.com/itzebe/hermes-assumption-ledger`** (canonical). The original misspelled
   name `...-ledge` 301-redirects; the rename did **not** change any commit SHA.
-- MIT, public, default branch `main`.
-- Catalog entry + patch + demo + docs live in `/workspace/submission-prep/`.
+- MIT, public, default branch `main`. Pin `a029ab66…` (v0.1.1); 73 tests.
+- Catalog entry + patch + demo + evidence scripts in `/workspace/submission-prep/`.
+- Upstream `main` moves fast (was `26874afd` → `00cda93a` with 56 commits in hours). **Always
+  re-check the base and re-pin before opening the PR.**
+
+## The rule the whole plugin rests on
+`status_after_check` (ledger/model.py): pass→VALID, fail→INVALIDATED, error→STALE/UNVERIFIED.
+**An error must leave an existing INVALIDATED untouched** — otherwise a provider outage silently
+unblocks contradicted work. The old code returned STALE when fresh evidence existed, and the
+oracle only covered the `unsupported` branch (which returns before the rule), so it hid the bug.
+Also `git_clean` must not count untracked files by default (the ledger's own DB made the tree
+look dirty).
 
 ## Blocker — needs the user
 `GITHUB_TOKEN` cannot `POST /user/repos`, `PATCH /repos/...`, `POST /repos/<up>/forks`, or
