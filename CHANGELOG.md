@@ -15,6 +15,22 @@ reviewed `v0.1.1` code.
 That means the entries below describe the state of the code, not tagged artifacts. Use the commit
 SHA when you need an immutable reference.
 
+### What the pinned commit does and does not contain
+
+The pinned commit `388cf029ccc5324c3f246423c8d461aa93d60090` is a documentation commit that touched
+only `.openhands/memory/`. Its tree does **not** contain the `docs/` directory described in this
+changelog, and its `README.md` is the earlier, shorter version.
+
+What it does contain is the **plugin itself, unchanged**: `ledger/`, `__init__.py`, `plugin.yaml`,
+`tests/` and `pyproject.toml` at that commit are byte-identical to the state these documents
+describe and test. So the pinned SHA is the correct reference for the reviewed `v0.1.1` code, and
+the 73-test result and validator results in these docs apply to it exactly.
+
+The consequence for a reviewer: **reading the repository at the pinned SHA will not show you this
+documentation set.** To ship the docs, the catalog entry needs re-pinning to a commit that includes
+them. Until then, treat the pinned SHA as the reference for behaviour and the default branch as the
+reference for documentation.
+
 ### A note on version strings
 
 `__init__.py` declares `__version__ = "0.1.0"`, while `plugin.yaml`, `pyproject.toml` and
