@@ -13,7 +13,7 @@ from .model import (
 from .store import LedgerStore
 from .verifiers import CheckContext, SUPPORTED_KINDS, run_check
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "LedgerEngine", "LedgerStore", "CheckContext", "run_check", "SUPPORTED_KINDS",

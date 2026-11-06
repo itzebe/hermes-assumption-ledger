@@ -191,9 +191,16 @@ def status_after_check(
     * ``error`` -> UNVERIFIED, never INVALIDATED. If we previously held fresh evidence the
       record degrades to STALE instead: we still have the old evidence, we simply cannot
       refresh it right now.
+
+    An existing INVALIDATED is the one exception to the ``error`` rule. A contradiction stands
+    until evidence refutes it; uncertainty only means we could not re-check, not that the
+    contradiction went away. Degrading it to STALE would let a provider outage silently unblock
+    work that depends on it, which is the failure this plugin exists to prevent.
     """
     if verdict == PASS:
         return VALID
     if verdict == FAIL:
+        return INVALIDATED
+    if previous_status == INVALIDATED:
         return INVALIDATED
     return STALE if had_fresh_evidence else UNVERIFIED

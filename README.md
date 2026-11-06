@@ -51,6 +51,15 @@ between a ledger you can trust and a false-alarm generator.
 A pass is never assumed to hold forever: `freshness_seconds` (default 86400) bounds how long
 `VALID` lasts before degrading to `STALE`.
 
+An `INVALIDATED` record is the one status uncertainty cannot move. A DNS failure, an HTTP 500, a
+timeout or an unknown check kind leaves a contradiction standing, because "I could not re-check"
+is not the same as "it is no longer true". Only evidence that refutes the contradiction clears it
+and unblocks the decisions depending on it.
+
+`git_clean` reports untracked files as observed evidence but does not treat them as a dirty tree
+by default, so a build artifact, a log or the ledger's own database cannot invalidate the
+assumption. Pass `include_untracked: true` when untracked files genuinely matter.
+
 ## Install
 
 From the catalog (once listed):

@@ -78,8 +78,19 @@ def test_git_branch_commit_clean(git_repo):
     assert run_check({"kind": "git_commit", "commit": head}, ctx).verdict == PASS
     assert run_check({"kind": "git_commit", "commit": "deadbeef"}, ctx).verdict == FAIL
     assert run_check({"kind": "git_clean"}, ctx).verdict == PASS
-    (git_repo / "dirty.txt").write_text("x")
+    # A modification to a tracked file is a real change to what was committed.
+    (git_repo / "f.txt").write_text("2")
     assert run_check({"kind": "git_clean"}, ctx).verdict == FAIL
+
+    # An untracked file (a build artifact, a log, the ledger's own database) is not a change to
+    # what was committed. It is reported, but it must not invalidate the assumption by default.
+    subprocess.run(["git", "checkout", "--", "f.txt"], cwd=git_repo, check=True, capture_output=True)
+    (git_repo / "artifact.log").write_text("noise")
+    clean = run_check({"kind": "git_clean"}, ctx)
+    assert clean.verdict == PASS, clean.detail
+    assert "artifact.log" in (clean.observed or {}).get("untracked", [])
+    # ...unless the caller asks for untracked files to count.
+    assert run_check({"kind": "git_clean", "include_untracked": True}, ctx).verdict == FAIL
 
 
 def test_git_outside_repo_is_error(tmp_path):

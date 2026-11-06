@@ -187,14 +187,25 @@ def check_git_commit(spec: Dict[str, Any], ctx: CheckContext) -> CheckResult:
 
 
 def check_git_clean(spec: Dict[str, Any], ctx: CheckContext) -> CheckResult:
+    """Untracked files are reported but do not, by default, count as a dirty tree.
+
+    A ledger database, a build artifact or a log file is not a change to what was committed.
+    Counting it would invalidate "the tree is clean" for reasons unrelated to the assumption,
+    so only tracked modifications invalidate unless the caller opts in with
+    ``include_untracked: true``. The untracked list is always returned as observed evidence.
+    """
     cwd = ctx.resolve(spec.get("cwd", "."))
     out, err = _run_git(ctx, ["status", "--porcelain"], cwd, ctx.default_timeout)
     if out is None:
         return _unknown(err or "git unavailable")
-    if not out:
-        return _ok("working tree clean")
-    files = [line[3:] for line in out.splitlines() if line.strip()]
-    return _bad("working tree has changes", changed=files[:50])
+    lines = [line for line in out.splitlines() if line.strip()]
+    untracked = [line[3:] for line in lines if line.startswith("??")]
+    tracked = [line[3:] for line in lines if not line.startswith("??")]
+    include_untracked = bool(spec.get("include_untracked", False))
+    relevant = tracked + untracked if include_untracked else tracked
+    if not relevant:
+        return _ok("working tree clean", untracked=untracked[:50])
+    return _bad("working tree has changes", changed=relevant[:50], untracked=untracked[:50])
 
 
 # --- 3. environment / configuration ----------------------------------------------------------

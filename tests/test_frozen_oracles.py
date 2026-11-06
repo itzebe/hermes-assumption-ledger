@@ -287,3 +287,45 @@ def test_oracle_table_is_complete():
     assert ids == [f"O{i}" for i in range(1, 13)]
     for case_id, scenario, expected in ORACLE_EXPECTATIONS:
         assert scenario and isinstance(expected, dict)
+
+
+# --- regression: the transient-error path, outside the frozen table ---------------------------
+def test_transient_error_does_not_soften_a_contradiction(tmp_path):
+    """A provider outage must not downgrade INVALIDATED to STALE.
+
+    The O10 case above only exercises the ``unsupported`` branch, which returns before
+    ``status_after_check`` is consulted. The dangerous path is a *real* transient error — DNS
+    failure, HTTP 5xx, timeout — where the record previously held fresh evidence. Downgrading to
+    STALE there would silently unblock every decision depending on the contradiction.
+    """
+    def dead_getter(url, timeout):
+        return {"error": "Name or service not known", "transient": True}
+
+    target = tmp_path / "gone.txt"
+    target.write_text("x")
+    eng = _engine(tmp_path, http_get=dead_getter)
+    a = eng.add_assumption("the file gone.txt exists", {"kind": "file_exists", "path": "gone.txt"})
+    assert eng.verify(a.id)["status"] == VALID
+
+    target.unlink()
+    assert eng.verify(a.id)["status"] == INVALIDATED
+
+    dec = eng.record_decision("ship it", depends_on=[a.id])
+    assert eng.store.get_decision(dec.id).state == "blocked"
+
+    # The provider now fails on every read. That is uncertainty, not absolution.
+    asm = eng.store.get_assumption(a.id)
+    asm.check = {"kind": "http_status", "url": "https://down.invalid/", "expected_status": 200}
+    eng.store.save_assumption(asm)
+    res = eng.verify(a.id)
+    assert res["verdict"] == ERROR
+    assert res["status"] == INVALIDATED, "a transient error must not soften a contradiction"
+    assert eng.store.get_decision(dec.id).state == "blocked", "the block must survive the outage"
+
+    # Only refuting evidence clears it.
+    asm = eng.store.get_assumption(a.id)
+    asm.check = {"kind": "file_exists", "path": "gone.txt"}
+    eng.store.save_assumption(asm)
+    target.write_text("back")
+    assert eng.verify(a.id)["status"] == VALID
+    assert eng.store.get_decision(dec.id).state == "open"
