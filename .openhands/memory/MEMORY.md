@@ -48,10 +48,26 @@ all 15 checks pass; doctor reports 4 tools + 4 hooks. Local commit `d398e2c` on 
 ## Published state (2026-11-06)
 - Live at **`github.com/itzebe/hermes-assumption-ledger`** (canonical). The original misspelled
   name `...-ledge` 301-redirects; the rename did **not** change any commit SHA.
-- MIT, public, default branch `main`. Pin `a029ab66…` (v0.1.1); 73 tests.
-- Catalog entry + patch + demo + evidence scripts in `/workspace/submission-prep/`.
-- Upstream `main` moves fast (was `26874afd` → `00cda93a` with 56 commits in hours). **Always
-  re-check the base and re-pin before opening the PR.**
+- MIT, public, default branch `main`. Current pin **`650533a22434c330e6a0fa8f2ee7bb3147b5c029`**
+  (v0.2.0) on both `main` and branch `docs/complete-project-documentation`. 284 tests + 1 skip.
+  Previous pin `388cf029…` (v0.1.1, 73 tests) is what the maintainer reviewed.
+- Catalog PR **`NousResearch/hermes-agent#150212`**; its head branch
+  `feat/assumption-ledger-plugin-catalog` lives in **`itzebe/hermes-agent`** (the fork), so
+  pushing that branch from `/workspace/pr-work/fork` updates the PR diff.
+- Upstream `main` moves fast. **Always re-check the base and re-pin before opening the PR.**
+
+## Hermes plugin rules learned the hard way
+- The `hermes plugins validate` **security scan reads test fixtures and scripts**, not just
+  runtime code. A literal `file:///etc/passwd` in a test corpus fails validation as critical
+  (`tools/skills_guard.py`). Use neutral paths in fixtures.
+- **Pinned-SHA validation is format-only.** The catalog test accepts a well-formed but
+  nonexistent SHA (all-ones passes; all-zeros fails only because YAML parses it as int `0`).
+  Verify a pin by cloning and checking out the exact commit, never by that test.
+- A standalone plugin **cannot import core**; but core's helpers (e.g.
+  `tools/url_safety.is_safe_url`) are the reference for behaviour. Reimplement, then *prove*
+  parity with a script — see `scripts/core_parity.py` (35 cases, 0 mismatches at core `ff6781e8e1`).
+- `hermes plugins doctor` reports declared tools/hooks; `validate` checks declared vs registered
+  match, tool collisions and the security scan.
 
 ## The rule the whole plugin rests on
 `status_after_check` (ledger/model.py): pass→VALID, fail→INVALIDATED, error→STALE/UNVERIFIED.
@@ -62,7 +78,9 @@ Also `git_clean` must not count untracked files by default (the ledger's own DB 
 look dirty).
 
 ## Blocker — needs the user
-`GITHUB_TOKEN` cannot `POST /user/repos`, `PATCH /repos/...`, `POST /repos/<up>/forks`, or
-`POST /repos/<up>/pulls` — all 403 "Resource not accessible by integration". It **can** push to
-existing `itzebe` repos. So the catalog PR must be opened by the owner, or the token needs
-Administration: write. `GITLAB_TOKEN` is invalid (401).
+`GITHUB_TOKEN` is a GitHub App installation token with **empty `x-oauth-scopes`**. It **can** push
+to existing `itzebe` repos (incl. the `itzebe/hermes-agent` fork) but every write to
+`NousResearch/hermes-agent` is 403 "Resource not accessible by integration": `POST /user/repos`,
+`PATCH /repos/...`, `POST /repos/<up>/forks`, `POST /repos/<up>/pulls`, and also
+`PATCH .../pulls/<n>` and `POST .../issues/<n>/comments`. So PR **body edits and review-response
+comments must be pasted by the owner**. `GITLAB_TOKEN` is invalid (401).
