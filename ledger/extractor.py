@@ -283,13 +283,15 @@ def _build_from_body(body: str) -> Optional[tuple]:
 def extract_from_tool_result(
     tool_name: str, result: str, *, max_items: int = 20
 ) -> List[Extracted]:
-    """Extract from a tool result.
+    """Always returns nothing. Tool output is not a trusted assumption source.
 
-    Tool output is where the *evidence* usually lives, so we only harvest explicit markers here.
-    Scanning raw tool output for natural-language patterns would manufacture assumptions the
-    agent never made (a directory listing mentioning "file.txt exists" is not an assumption).
+    A web page, a file or a terminal listing can contain the literal text ``Assumption: ...``.
+    Harvesting it would persist outside text and re-inject it into every later turn, which is a
+    prompt-injection channel into durable context. The function is kept as an explicit refusal so
+    the policy is visible at the point a caller might expect extraction, and so a future change has
+    to delete this docstring to reintroduce the behaviour.
+
+    Assumptions about a tool result belong in the assistant's own message, or in an explicit
+    ``assumption_record`` call.
     """
-    return extract_from_text(
-        result or "", source=f"tool:{tool_name}", max_items=max_items,
-        allow_markers=True, allow_patterns=False,
-    )
+    return []

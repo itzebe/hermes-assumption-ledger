@@ -66,12 +66,13 @@ rather than a hard crash.
 | --- | --- |
 | `LedgerHost` | Holds the single `LedgerEngine` for the process. `engine()` builds it on first use; `error` exposes why it failed. |
 | `_data_dir()` | Resolves the storage directory. Prefers Hermes' `plugins.plugin_storage.plugin_data_dir`; falls back to `HERMES_HOME/plugin-data/assumption-ledger`, then `~/.hermes/...`. |
-| `_check_context()` | Builds the `CheckContext`, resolving the agent cwd via `agent.runtime_cwd.resolve_agent_cwd()` when available. |
-| `on_pre_llm_call` | Re-inject live assumptions, or veto the turn when a decision depends on a contradicted assumption. |
+| `_check_context(cfg)` | Builds the `CheckContext`, resolving the agent cwd via `agent.runtime_cwd.resolve_agent_cwd()` when available and applying the configured command and URL policies. |
+| `resolve_config()` | Reads and validates the five declared settings; exposes the effective values. |
+| `on_pre_llm_call` | Re-inject live assumptions and warn (never veto) when a decision in this session depends on a contradicted assumption. |
 | `on_post_llm_call` | Capture assumptions from the assistant's reply. |
-| `on_post_tool_call` | Capture explicit markers that a tool result surfaced. |
-| `on_pre_verify` | At the edited-code verify gate, hold the turn while a contradicted assumption is load-bearing. |
-| `tool_assumption_record` / `_check` / `_status` / `_decide` | The four tool handlers. Each returns a JSON string. |
+| `on_post_tool_call` | A deliberate no-op: tool output is never a capture source. |
+| `on_pre_verify` | At the edited-code verify gate, hold the turn while a contradicted assumption is load-bearing in this session. |
+| `tool_assumption_record` / `_check` / `_status` / `_decide` / `_resolve` / `_drop` | The six tool handlers. Each returns a JSON string. |
 | `command_assumptions` | The `/assumptions` slash command handler. |
 | `register(ctx)` | Registers everything. Called once by Hermes at load time. |
 
@@ -230,9 +231,9 @@ flowchart TD
     V12 --> EN --> ST --> EN
     EN <--> DB
     EN --> PLLM
-    PLLM -->|context| TURN
-    PLLM -->|action: block| TURN
+    PLLM -->|context: warn| TURN
     EN --> PV
+    PV -->|action: continue| TURN
 ```
 
 ## Assumption capture flow
@@ -242,7 +243,7 @@ Two paths, and they deliberately differ in what they are allowed to see.
 ```mermaid
 flowchart LR
     A[Assistant message] --> B[extract_from_text<br/>markers + patterns]
-    C[Tool result] --> D[extract_from_tool_result<br/>markers only]
+    C[Tool result] --> D[extract_from_tool_result<br/>refused: returns nothing]
     B --> E[dedupe within text<br/>normalise + max_items]
     D --> E
     E --> F[assumption_id<br/>sha256 of statement + check]
@@ -251,11 +252,14 @@ flowchart LR
     G -->|yes| I[merge: seen_count++<br/>accumulate provenance<br/>preserve first sighting]
 ```
 
-**Why tool results only get markers.** Tool output is where *evidence* usually lives. Scanning raw
-tool output for natural-language patterns would manufacture assumptions the agent never made — a
-directory listing that happens to contain the phrase "file.txt exists" is not an assumption. The
-extractor's own docstring states this, and `tests/test_extractor.py::test_tool_result_only_harvests_markers`
-enforces it.
+**Why tool results get nothing at all.** Tool output is untrusted text. Scanning it for
+natural-language patterns would manufacture assumptions the agent never made — a directory listing
+containing "file.txt exists" is not an assumption. Harvesting explicit markers is worse: a web
+page, a file or a terminal listing can contain the literal string `Assumption: ...`, and persisting
+it would create a durable record re-injected into every later turn, giving outside content a
+permanent place in the model's context. `extract_from_tool_result` therefore returns nothing, and
+`tests/test_extractor.py::test_tool_result_harvests_nothing_at_all` plus `tests/test_injection.py`
+enforce it.
 
 **A marker with no checkable form is still captured.** `ASSUMPTION: everything is probably fine`
 has no deterministic test, so it is stored with `{"kind": "unsupported"}` and stays `UNVERIFIED`
@@ -339,9 +343,9 @@ flowchart TD
     C -->|yes| E[dec.state = blocked<br/>blocked_reason names the assumption]
     E --> F[critical_blockers returns this]
     F --> G[on_pre_llm_call]
-    G --> H{action: block + message}
-    H --> I[Turn ends before inference]
-    F --> J[on_pre_verify]
+    G --> H[context: warn + recovery commands]
+    H --> I[Turn proceeds: the agent can investigate]
+    F --> J[on_pre_verify, same session]
     J --> K{action: continue + message}
     K --> L[Turn is held at the verify gate]
 
@@ -352,8 +356,12 @@ flowchart TD
 The gate is **conditional by construction**. `critical_blockers()` iterates `INVALIDATED`
 assumptions and keeps only those with at least one dependent decision. An invalidated assumption
 nobody relies on produces no blocker, so the hook returns `None` and the turn proceeds normally.
-That is asserted by `tests/test_plugin_integration.py::test_pre_llm_blocks_only_with_dependent_decision`
-and `tests/test_frozen_oracles.py::test_O7b_unrelated_decision_is_not_blocked`.
+The check is also scoped to the session that recorded the dependent decision, so a contradiction in
+one session does not touch another. That is asserted by
+`tests/test_plugin_integration.py::test_pre_llm_warns_but_never_blocks`,
+`tests/test_plugin_integration.py::test_pre_verify_holds_only_the_affected_session`,
+`tests/test_recovery.py::test_unrelated_session_is_never_blocked` and
+`tests/test_frozen_oracles.py::test_O7b_unrelated_decision_is_not_blocked`.
 
 ## Persistence and recovery
 
@@ -379,19 +387,20 @@ assumptions (`test_O9_compaction_reinjection`).
 
 ## Hermes integration
 
-`register(ctx)` is called once by Hermes. It makes exactly nine registrations:
+`register(ctx)` is called once by Hermes. It captures `ctx.get_config`, resets the cached host, and
+makes exactly eleven registrations:
 
 | Kind | Names |
 | --- | --- |
 | Hooks | `pre_llm_call`, `post_llm_call`, `post_tool_call`, `pre_verify` |
-| Tools | `assumption_record`, `assumption_check`, `assumption_status`, `assumption_decide` (toolset `assumption_ledger`) |
+| Tools | `assumption_record`, `assumption_check`, `assumption_status`, `assumption_decide`, `assumption_resolve`, `assumption_drop` (toolset `assumption_ledger`) |
 | Slash command | `/assumptions` |
 
 All four hook names are members of Hermes' `VALID_HOOKS` set. Hook callbacks are wrapped in
 `try/except` and log on failure — they **fail open**, meaning a bug in this plugin degrades to
 "the plugin did nothing this turn" rather than breaking the agent loop. `post_llm_call` and
-`post_tool_call` return `None` (observer hooks); `pre_llm_call` and `pre_verify` return a directive
-dict or `None`.
+`post_tool_call` return `None` (observer hooks); `pre_llm_call` returns a `context` dict or `None`
+(it never returns a `block` action); `pre_verify` returns a `continue` directive or `None`.
 
 `tests/test_plugin_integration.py::test_manifest_declared_tools_match_registrations` asserts that
 the tools and hooks declared in `plugin.yaml` are exactly the ones `register()` registers, so the

@@ -26,7 +26,10 @@ from typing import Any, Dict, List, Optional
 from . import model as M
 from .extractor import Extracted, extract_from_text, extract_from_tool_result
 from .model import (
+    DROPPED,
+    DROPPED_EVIDENCE,
     INVALIDATED,
+    LIVE_STATUSES,
     STALE,
     UNVERIFIED,
     VALID,
@@ -49,22 +52,41 @@ class LedgerEngine:
         freshness_seconds: float = DEFAULT_FRESHNESS_SECONDS,
         ctx: Optional[CheckContext] = None,
         now: Optional[callable] = None,
+        reinject_limit: int = 25,
+        auto_check_on_capture: bool = False,
     ):
         self.store = store
         self.freshness_seconds = float(freshness_seconds)
         self.ctx = ctx or CheckContext()
         self._now = now or time.time
+        # Both read from plugin config by the integration; defaults match the documented values.
+        self.reinject_limit = max(1, int(reinject_limit))
+        self.auto_check_on_capture = bool(auto_check_on_capture)
 
     # --- capture ----------------------------------------------------------------------
     def observe_message(self, text: str, *, origin: str = "assistant", meta: Optional[Dict] = None) -> List[Assumption]:
-        """Capture assumptions from an assistant message."""
-        return self._ingest(extract_from_text(text or "", source=origin), origin, meta)
+        """Capture assumptions from the assistant's own message.
+
+        The assistant's reply is the model's own statement, so a marker here is the agent
+        declaring an assumption about its plan. This is the only text source that persists.
+        """
+        captured = self._ingest(extract_from_text(text or "", source=origin), origin, meta)
+        self._auto_check(captured)
+        return captured
 
     def observe_tool_result(self, tool_name: str, result: str, meta: Optional[Dict] = None) -> List[Assumption]:
-        """Capture explicit assumptions that appeared in a tool result."""
-        return self._ingest(
-            extract_from_tool_result(tool_name, result or ""), f"tool:{tool_name}", meta
-        )
+        """Tool output is never persisted as an assumption.
+
+        Tool output is untrusted: a web page, a file or a terminal listing can contain the literal
+        text ``Assumption: ...`` and would otherwise write a durable record that is re-injected
+        into every later turn. That is a prompt-injection channel into persistent context, so it is
+        refused outright rather than filtered.
+
+        The method is kept (and returns ``[]``) so a caller written against the previous API keeps
+        working. Assumptions about a tool result belong in the assistant's own message, or in an
+        explicit ``assumption_record`` call.
+        """
+        return []
 
     def add_assumption(
         self,
@@ -73,11 +95,28 @@ class LedgerEngine:
         *,
         origin: str = "manual",
         meta: Optional[Dict] = None,
+        auto_check: Optional[bool] = None,
     ) -> Assumption:
         """Explicitly record one assumption (used by the tool and tests)."""
-        return self._store_one(
+        asm = self._store_one(
             Extracted(statement=statement, check=check, origin=origin), origin, meta
         )
+        should_check = self.auto_check_on_capture if auto_check is None else bool(auto_check)
+        if should_check:
+            self.verify(asm.id)
+            refreshed = self.store.get_assumption(asm.id)
+            if refreshed is not None:
+                return refreshed
+        return asm
+
+    def _auto_check(self, captured: List[Assumption]) -> None:
+        if not self.auto_check_on_capture:
+            return
+        for asm in captured:
+            try:
+                self.verify(asm.id)
+            except Exception:  # a failed auto-check must never break capture
+                continue
 
     def _ingest(
         self, items: List[Extracted], origin: str, meta: Optional[Dict]
@@ -110,9 +149,18 @@ class LedgerEngine:
 
     # --- decisions --------------------------------------------------------------------
     def record_decision(
-        self, statement: str, depends_on: Optional[List[str]] = None, *, origin: str = "manual"
+        self,
+        statement: str,
+        depends_on: Optional[List[str]] = None,
+        *,
+        origin: str = "manual",
+        session_id: str = "",
     ) -> Decision:
-        """Record a plan step / action and the assumptions it relies on."""
+        """Record a plan step / action and the assumptions it relies on.
+
+        ``session_id`` scopes the decision. A blocker is only ever reported to the session that
+        recorded the decision, so one session's contradiction cannot stop another's work.
+        """
         dec = Decision(
             id=decision_id(statement),
             key=M.slug(statement),
@@ -120,6 +168,7 @@ class LedgerEngine:
             depends_on=list(depends_on or []),
             state="open",
             created_at=self._now(),
+            session_id=str(session_id or ""),
         )
         stored = self.store.upsert_decision(dec)
         self._recompute_decision_block(stored)
@@ -149,6 +198,69 @@ class LedgerEngine:
             dec.state = "open"
             dec.blocked_reason = None
         self.store.save_decision(dec)
+
+    # --- user recovery -----------------------------------------------------------------
+    def resolve(self, asm_id: str, *, note: str = "") -> Dict[str, Any]:
+        """Re-check an assumption and report the outcome. Never forces a status.
+
+        This is the evidence path out of a block: the user asks for a re-check, the verifier runs,
+        and the lifecycle rules decide. A pass clears the contradiction; a fail keeps it; an error
+        leaves it exactly as it was. The user cannot assert a verdict here, which is what stops
+        "resolve" from becoming a way to launder a contradiction into VALID.
+        """
+        asm = self.store.get_assumption(asm_id)
+        if asm is None:
+            return {"error": f"unknown assumption {asm_id}"}
+        before = asm.status
+        result = self.verify(asm_id)
+        after = result.get("status", before)
+        outcome = "reverified"
+        if after == before == INVALIDATED:
+            outcome = "still_invalidated"
+        elif before == INVALIDATED and after != INVALIDATED:
+            outcome = "cleared"
+        return {
+            "assumption": asm_id,
+            "outcome": outcome,
+            "previous_status": before,
+            "status": after,
+            "verdict": result.get("verdict"),
+            "detail": result.get("detail"),
+            "note": note or None,
+        }
+
+    def drop(self, asm_id: str, *, note: str = "") -> Dict[str, Any]:
+        """Retire an assumption from the live set without claiming it was proven.
+
+        DROPPED is a distinct status, not VALID. The assumption stops being re-injected and stops
+        blocking dependent decisions, and the evidence trail records that a *user* retired it. No
+        pass verdict is written, so the ledger never reports verification that did not happen.
+        """
+        asm = self.store.get_assumption(asm_id)
+        if asm is None:
+            return {"error": f"unknown assumption {asm_id}"}
+        before = asm.status
+        asm.status = DROPPED
+        asm.updated_at = self._now()
+        self.store.save_assumption(asm)
+        self.store.add_evidence(
+            asm.id,
+            DROPPED_EVIDENCE,
+            f"retired by user without verification{(': ' + note) if note else ''}",
+            source="engine:drop",
+        )
+        unblocked = []
+        for dec in self.store.decisions_depending_on(asm.id):
+            self._recompute_decision_block(dec)
+            unblocked.append(dec.id)
+        return {
+            "assumption": asm_id,
+            "outcome": "dropped",
+            "previous_status": before,
+            "status": DROPPED,
+            "unblocked_decisions": unblocked,
+            "note": note or None,
+        }
 
     # --- verification -----------------------------------------------------------------
     def verify(self, asm_id: str) -> Dict[str, Any]:
@@ -247,22 +359,31 @@ class LedgerEngine:
         by_status: Dict[str, int] = {s: 0 for s in M.STATUSES}
         for a in assumptions:
             by_status[a.status] = by_status.get(a.status, 0) + 1
-        blocked = [d for d in self.store.list_decisions() if d.state == "blocked"]
+        blocked = self.blocked_decisions()
         return {
             "total": len(assumptions),
             "by_status": by_status,
             "invalidated": [a.to_dict() for a in assumptions if a.status == INVALIDATED],
             "unverified": [a.to_dict() for a in assumptions if a.status == UNVERIFIED],
             "stale": [a.to_dict() for a in assumptions if a.status == STALE],
+            "dropped": [a.to_dict() for a in assumptions if a.status == DROPPED],
             "blocked_decisions": [d.to_dict() for d in blocked],
             "supported_check_kinds": list(SUPPORTED_KINDS),
         }
 
-    def critical_blockers(self) -> List[Dict[str, Any]]:
-        """Invalidated assumptions that block at least one decision, for the pre-proceed gate."""
+    def critical_blockers(self, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Invalidated assumptions that block at least one decision, for the pre-proceed gate.
+
+        ``session_id`` scopes the answer. When given, only decisions recorded in that session are
+        considered, so a contradiction raised in one session never stops another. ``None`` (or an
+        empty string, meaning "no session context") reports every blocked decision, which is what
+        a status view wants.
+        """
         out = []
         for asm in self.store.list_assumptions(status=INVALIDATED):
             decs = self.store.decisions_depending_on(asm.id)
+            if session_id:
+                decs = [d for d in decs if d.session_id == session_id]
             if decs:
                 out.append({
                     "assumption": asm.to_dict(),
@@ -270,19 +391,24 @@ class LedgerEngine:
                 })
         return out
 
+    def blocked_decisions(self, session_id: Optional[str] = None) -> List[Decision]:
+        blocked = [d for d in self.store.list_decisions() if d.state == "blocked"]
+        if session_id:
+            blocked = [d for d in blocked if d.session_id == session_id]
+        return blocked
+
     def live_assumptions(self) -> List[Assumption]:
         """Assumptions the agent should still honour: VALID, STALE or UNVERIFIED.
 
         This is the re-injection payload. It is read entirely from durable storage, so it is
-        available after a compaction, a restart, or a new session with no in-memory state.
+        available after a compaction, a restart, or a new session with no in-memory state. A
+        DROPPED assumption is excluded: the user retired it, so it is no longer in effect.
         """
-        return [
-            a for a in self.store.list_assumptions()
-            if a.status in (VALID, STALE, UNVERIFIED)
-        ]
+        return [a for a in self.store.list_assumptions() if a.status in LIVE_STATUSES]
 
-    def render_reinjection(self, limit: int = 25) -> str:
+    def render_reinjection(self, limit: Optional[int] = None) -> str:
         """Compact block re-injected into the model context to keep assumptions in view."""
+        limit = self.reinject_limit if limit is None else limit
         live = self.live_assumptions()
         if not live:
             return ""
@@ -296,6 +422,8 @@ class LedgerEngine:
                 lines.append(
                     f"  [INVALIDATED] {b['assumption']['statement']} (id {b['assumption']['id']})"
                 )
+            lines.append("  Use /assumptions show <id>, /assumptions resolve <id> or "
+                         "/assumptions drop <id> to inspect or clear a block.")
         return "\n".join(lines)
 
     def render_status(self, limit: int = 20) -> str:
@@ -317,11 +445,16 @@ class LedgerEngine:
         if s["blocked_decisions"]:
             lines.append("  BLOCKED decisions:")
             for d in s["blocked_decisions"][:limit]:
-                lines.append(f"    - {d['id']} {d['statement'][:70]}")
+                scope = f" [session {d['session_id'][:8]}]" if d.get("session_id") else ""
+                lines.append(f"    - {d['id']} {d['statement'][:70]}{scope}")
+            lines.append("  To clear a block: /assumptions resolve <id> (re-check) or "
+                         "/assumptions drop <id> (retire without verification).")
         if s["stale"]:
             lines.append(f"  STALE: {len(s['stale'])} assumption(s) need re-checking")
         if s["unverified"]:
             lines.append(f"  UNVERIFIED: {len(s['unverified'])} assumption(s) have no evidence yet")
+        if s.get("dropped"):
+            lines.append(f"  DROPPED: {len(s['dropped'])} assumption(s) retired by the user")
         if not s["total"]:
             lines.append("  (nothing captured yet)")
         return "\n".join(lines)

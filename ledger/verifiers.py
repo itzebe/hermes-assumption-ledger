@@ -19,8 +19,11 @@ import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urljoin
 
+from .command_policy import is_allowed as _command_is_allowed, minimal_env as _minimal_env
 from .model import ERROR, FAIL, PASS, CheckResult
+from .url_safety import check_url as _check_url
 
 # --- HTTP ------------------------------------------------------------------------------------
 try:  # pragma: no cover - import guard
@@ -34,7 +37,16 @@ _TRANSIENT_HTTP = {408, 425, 429, 500, 502, 503, 504}
 
 
 class CheckContext:
-    """Everything a verifier may read. Injected so tests can control it exactly."""
+    """Everything a verifier may read. Injected so tests can control it exactly.
+
+    Two policy inputs are read from here rather than from a check spec, so model input can never
+    widen either one:
+
+    * ``command_allowlist`` — the executables ``command_succeeds`` may run. Empty (the default)
+      means command verification is disabled entirely.
+    * ``allow_private_urls`` — whether HTTP checks may reach private/loopback/link-local
+      destinations. Defaults to False; cloud-metadata endpoints stay blocked either way.
+    """
 
     def __init__(
         self,
@@ -44,6 +56,9 @@ class CheckContext:
         runner: Optional[Callable[..., Any]] = None,
         env: Optional[Dict[str, str]] = None,
         default_timeout: float = 5.0,
+        command_allowlist: Optional[tuple] = None,
+        allow_private_urls: bool = False,
+        url_resolver: Optional[Callable[[str], Any]] = None,
     ):
         self.root = Path(root) if root else None
         self.cwd = Path(cwd) if cwd else Path(os.getcwd())
@@ -51,6 +66,10 @@ class CheckContext:
         self._runner = runner or subprocess.run
         self.env = env if env is not None else os.environ
         self.default_timeout = default_timeout
+        self.command_allowlist = tuple(command_allowlist or ())
+        self.allow_private_urls = bool(allow_private_urls)
+        # Injectable so the SSRF tests never touch real DNS.
+        self.url_resolver = url_resolver
 
     @property
     def runner(self) -> Callable[..., Any]:
@@ -62,6 +81,14 @@ class CheckContext:
         if p.is_absolute() or self.root is None:
             return p
         return self.root / p
+
+    def url_allowed(self, url: str) -> tuple:
+        """Apply the SSRF policy to *url*. Returns ``(allowed, reason)``."""
+        return _check_url(
+            url,
+            allow_private=self.allow_private_urls,
+            resolver=self.url_resolver,
+        )
 
 
 def _ok(detail: str, **observed: Any) -> CheckResult:
@@ -224,17 +251,28 @@ def check_env_set(spec: Dict[str, Any], ctx: CheckContext) -> CheckResult:
 
 
 def check_command_succeeds(spec: Dict[str, Any], ctx: CheckContext) -> CheckResult:
-    """Run a read-only probe command and use its exit code as the verdict."""
+    """Run an allowlisted probe command and use its exit code as the verdict.
+
+    Disabled by default. Execution requires a non-empty ``command_allowlist`` on the context,
+    which only plugin config can supply — a check spec cannot add to it. Refusals are ERROR
+    (uncertainty), never FAIL: an unpermitted command is a policy outcome, not evidence that the
+    assumption is false.
+    """
     argv = spec.get("argv")
-    if not isinstance(argv, list) or not argv:
-        return _unknown("argv must be a non-empty list")
-    if any(not isinstance(a, str) for a in argv):
-        return _unknown("argv entries must be strings")
+    allowed, reason = _command_is_allowed(argv, ctx.command_allowlist)
+    if not allowed:
+        return _unknown(f"command not permitted: {reason}", argv=argv[0] if isinstance(argv, list) and argv else None)
     cwd = ctx.resolve(spec.get("cwd", "."))
     timeout = float(spec.get("timeout", ctx.default_timeout))
     try:
         proc = ctx.runner(
-            argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout
+            list(argv),
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=False,
+            env=_minimal_env(),
         )
     except FileNotFoundError:
         return _unknown("command not found", argv=argv[0])
@@ -248,23 +286,93 @@ def check_command_succeeds(spec: Dict[str, Any], ctx: CheckContext) -> CheckResu
 
 
 # --- 4. HTTP ---------------------------------------------------------------------------------
-def _default_http_get(url: str, timeout: float) -> Dict[str, Any]:
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+_MAX_REDIRECTS = 5
+_MAX_BODY_BYTES = 200_000
+
+
+def _read_body(resp: Any, limit: int = _MAX_BODY_BYTES) -> str:
+    return resp.read(limit).decode("utf-8", errors="replace")
+
+
+def _build_no_redirect_opener() -> Any:
+    """An opener that surfaces 3xx instead of following it, so each hop can be re-validated."""
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802
+            return None
+
+    return urllib.request.build_opener(_NoRedirect())
+
+
+_OPENER = _build_no_redirect_opener() if urllib is not None else None
+
+
+def _fetch_once(url: str, timeout: float) -> Dict[str, Any]:
+    """One request. Redirects are reported, never followed."""
     req = urllib.request.Request(url, method="GET", headers={"User-Agent": "assumption-ledger"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            body = resp.read(200_000).decode("utf-8", errors="replace")
-            return {"status": getattr(resp, "status", 200), "body": body}
+        with _OPENER.open(req, timeout=timeout) as resp:  # noqa: S310
+            status = getattr(resp, "status", 200)
+            out: Dict[str, Any] = {"status": status, "body": _read_body(resp)}
+            if status in _REDIRECT_CODES:
+                location = (getattr(resp, "headers", None) or {}).get("Location")
+                if location:
+                    out["location"] = location
+            return out
     except urllib.error.HTTPError as exc:
         body = ""
         try:
-            body = exc.read(200_000).decode("utf-8", errors="replace")
+            body = _read_body(exc)
         except Exception:
             pass
-        return {"status": exc.code, "body": body}
+        out = {"status": exc.code, "body": body}
+        if exc.code in _REDIRECT_CODES:
+            location = (getattr(exc, "headers", None) or {}).get("Location")
+            if location:
+                out["location"] = location
+        return out
     except urllib.error.URLError as exc:
         return {"error": str(exc.reason), "transient": True}
     except Exception as exc:  # socket timeout, ssl, dns ...
         return {"error": f"{type(exc).__name__}: {exc}", "transient": True}
+
+
+def _fetch_following_safely(url: str, timeout: float, ctx: CheckContext) -> Dict[str, Any]:
+    """Follow redirects manually, re-applying the SSRF policy to every hop.
+
+    A redirect is a URL the model did not name, so an unvalidated hop would be a bypass. Each
+    target is checked before it is requested; a refused hop ends the fetch as a policy denial.
+    """
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        resp = _fetch_once(current, timeout)
+        if "error" in resp:
+            return resp
+        location = resp.get("location")
+        if resp.get("status") not in _REDIRECT_CODES or not location:
+            return resp
+        target = urljoin(current, location)
+        allowed, reason = ctx.url_allowed(target)
+        if not allowed:
+            return {"policy_denied": f"redirect target refused: {reason}"}
+        current = target
+    return {"error": "too many redirects", "transient": True}
+
+
+def _http_get_guarded(url: str, timeout: float, ctx: CheckContext) -> Dict[str, Any]:
+    """The single HTTP entry point for the verifiers.
+
+    The SSRF policy is applied here, before any fetch, so it holds regardless of which transport
+    is in use. An injected ``http_get`` (the test seam) is still subject to it — the policy
+    belongs to the verifier, not to the transport.
+    """
+    allowed, reason = ctx.url_allowed(url)
+    if not allowed:
+        return {"policy_denied": reason}
+    if ctx._http_get is not None:
+        return ctx._http_get(url, timeout)
+    return _fetch_following_safely(url, timeout, ctx)
 
 
 def check_http_status(spec: Dict[str, Any], ctx: CheckContext) -> CheckResult:
@@ -272,14 +380,15 @@ def check_http_status(spec: Dict[str, Any], ctx: CheckContext) -> CheckResult:
     if not url:
         return _unknown("url is required")
     timeout = float(spec.get("timeout", ctx.default_timeout))
-    getter = ctx._http_get or _default_http_get
     try:
-        resp = getter(url, timeout)
+        resp = _http_get_guarded(url, timeout, ctx)
     except Exception as exc:  # a raising getter is a provider failure, not a contradiction
         return _unknown(f"request failed: {type(exc).__name__}: {exc}", url=url)
 
     if resp is None:
         return _unknown("no response from provider", url=url)
+    if "policy_denied" in resp:
+        return _unknown(f"url refused by policy: {resp['policy_denied']}", url=url)
     if "error" in resp:
         return _unknown(f"provider unavailable: {resp['error']}", url=url, transient=True)
 
@@ -300,12 +409,15 @@ def check_http_json_field(spec: Dict[str, Any], ctx: CheckContext) -> CheckResul
     if not url or pointer is None:
         return _unknown("url and pointer are both required")
     timeout = float(spec.get("timeout", ctx.default_timeout))
-    getter = ctx._http_get or _default_http_get
     try:
-        resp = getter(url, timeout)
+        resp = _http_get_guarded(url, timeout, ctx)
     except Exception as exc:
         return _unknown(f"request failed: {type(exc).__name__}: {exc}", url=url)
-    if resp is None or "error" in resp:
+    if resp is None:
+        return _unknown("provider unavailable", url=url)
+    if "policy_denied" in resp:
+        return _unknown(f"url refused by policy: {resp['policy_denied']}", url=url)
+    if "error" in resp:
         return _unknown("provider unavailable", url=url)
     status = int(resp.get("status", 0))
     if status in _TRANSIENT_HTTP:
@@ -321,9 +433,27 @@ def check_http_json_field(spec: Dict[str, Any], ctx: CheckContext) -> CheckResul
         return _bad("pointer not present in payload", url=url, pointer=pointer)
     if "equals" in spec:
         if actual == spec["equals"]:
-            return _ok("value matches", pointer=pointer, value=actual)
-        return _bad("value differs", pointer=pointer, actual=actual)
-    return _ok("pointer present", pointer=pointer, value=actual)
+            return _ok("value matches", pointer=pointer, value=_summarize(actual))
+        return _bad("value differs", pointer=pointer, actual=_summarize(actual))
+    return _ok("pointer present", pointer=pointer, value=_summarize(actual))
+
+
+def _summarize(value: Any, limit: int = 120) -> Any:
+    """A bounded, type-tagged rendering of a response value for the evidence trail.
+
+    Evidence is persisted and re-injected, so an endpoint must not be able to plant an arbitrary
+    unbounded string there. Numbers, booleans and null pass through; everything else becomes a
+    short repr with its type name, truncated at *limit*.
+    """
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:limit] if len(value) <= limit else value[:limit] + "…"
+    if isinstance(value, (list, tuple)):
+        return {"type": type(value).__name__, "len": len(value)}
+    if isinstance(value, dict):
+        return {"type": "dict", "keys": sorted(str(k) for k in value)[:20]}
+    return {"type": type(value).__name__}
 
 
 _MISSING = object()
@@ -374,6 +504,51 @@ def check_db_table_exists(spec: Dict[str, Any], ctx: CheckContext) -> CheckResul
     return _bad("table missing", table=table)
 
 
+_WHERE_COLUMN = r'"?[A-Za-z_][A-Za-z0-9_]*"?'
+_WHERE_ATOM = re.compile(
+    r"""^\s*
+    (?P<col>%s)\s*
+    (?:
+        (?P<op><=|>=|<>|!=|=|<|>)\s*(?P<val>\?|'(?:[^']|'')*'|-?\d+(?:\.\d+)?|NULL)\s*
+      | (?P<isnot>IS\s+NOT\s+NULL)\s*
+      | (?P<is>IS\s+NULL)\s*
+    )
+    $""" % _WHERE_COLUMN,
+    re.IGNORECASE | re.VERBOSE,
+)
+_WHERE_JOIN = re.compile(r"\s+(AND|OR)\s+", re.IGNORECASE)
+
+
+def _safe_where(clause: Any) -> Optional[str]:
+    """Validate a caller-supplied WHERE clause, or return None to refuse it.
+
+    The connection is read-only, but an unvalidated clause is still a SQL-injection surface, so
+    only a narrow grammar is accepted: one or more ``column OP literal`` atoms joined by AND/OR,
+    with ``OP`` in a fixed set and ``?`` for a bound parameter. Anything else — a subquery, a
+    function call, a comment, a semicolon, an unbalanced quote — is refused, and the check returns
+    ERROR (uncertainty) rather than running it.
+    """
+    if not isinstance(clause, str) or not clause.strip():
+        return None
+    if len(clause) > 500:
+        return None
+    if any(tok in clause for tok in (";", "--", "/*", "*/", "(", ")")):
+        return None
+    if re.search(r"\b(SELECT|UNION|INSERT|UPDATE|DELETE|DROP|ALTER|ATTACH|PRAGMA|EXEC|CAST)\b",
+                 clause, re.IGNORECASE):
+        return None
+    atoms = _WHERE_JOIN.split(clause.strip())
+    # atoms alternates: atom, JOIN, atom, JOIN, atom ...
+    if not atoms or len(atoms) % 2 == 0:
+        return None
+    for index, part in enumerate(atoms):
+        if index % 2 == 1:
+            continue  # a join keyword, already matched by the split pattern
+        if not _WHERE_ATOM.match(part):
+            return None
+    return clause.strip()
+
+
 def check_db_row_count(spec: Dict[str, Any], ctx: CheckContext) -> CheckResult:
     path, table = spec.get("path"), spec.get("table")
     if not path or not table:
@@ -387,7 +562,11 @@ def check_db_row_count(spec: Dict[str, Any], ctx: CheckContext) -> CheckResult:
     sql = f'SELECT COUNT(*) FROM "{table}"'
     params: tuple = ()
     if where:
-        sql += f" WHERE {where}"  # caller-supplied predicate, read-only connection
+        safe = _safe_where(where)
+        if safe is None:
+            # A clause we cannot validate is uncertainty, never a verdict.
+            return _unknown("where clause is not a supported simple predicate", table=table)
+        sql += f" WHERE {safe}"
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     except sqlite3.Error as exc:

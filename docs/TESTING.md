@@ -20,31 +20,53 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-Expected: **73 passed**, in about a second.
+Expected: **284 passed, 1 skipped**, in a few seconds. (The skip is the live-core comparison in
+`test_core_parity.py`; it runs only inside a Hermes checkout.)
 
 ```
-........................................................................ [ 98%]
-.                                                                        [100%]
-73 passed in 0.90s
+........................................................................ [ 29%]
+........................................................................ [ 58%]
+........................................................................ [ 87%]
+..............................                                           [100%]
+284 passed, 1 skipped in 2.19s
 ```
 
-The suite is deterministic. Three consecutive runs produce the same 73 passes, with no
-order-dependence, no skips, no xfails, and no network access.
+The suite is deterministic. Consecutive runs produce the same 284 passes, with no order-dependence,
+no skips, no xfails, and no network access. HTTP checks are exercised through injected transports
+and resolver stubs, so nothing leaves the machine.
 
 ## Test suite overview
 
 | File | Tests | Lines | Focus |
 | --- | --- | --- | --- |
 | `tests/test_frozen_oracles.py` | 17 | 331 | The adversarial scenario table. The contract. |
-| `tests/test_verifiers.py` | 20 | 214 | Each of the 12 check kinds, plus failure modes. |
+| `tests/test_verifiers.py` | 27 | 278 | Each of the 12 check kinds, plus failure modes. |
 | `tests/test_engine.py` | 14 | 194 | Capture, verification, propagation, freshness, reporting. |
-| `tests/test_extractor.py` | 12 | 101 | Extraction precision — including what must *not* be extracted. |
-| `tests/test_plugin_integration.py` | 10 | 182 | The Hermes adapter: hooks, tools, slash command, manifest. |
-| **Total** | **73** | **1022** | |
+| `tests/test_extractor.py` | 12 | 105 | Extraction precision — including what must *not* be extracted. |
+| `tests/test_plugin_integration.py` | 11 | 207 | The Hermes adapter: hooks, tools, slash command, manifest. |
+| `tests/test_ssrf.py` | 67 | 380 | The SSRF policy: schemes, loopback, private, metadata, redirects, DNS. |
+| `tests/test_recovery.py` | 24 | 301 | Session-scoped blocking, `resolve`, `drop`, and the error invariant. |
+| `tests/test_injection.py` | 13 | 170 | Tool output is never captured; planted markers create nothing. |
+| `tests/test_config.py` | 33 | 284 | Every declared setting has an observable effect. |
+| `tests/test_command_policy.py` | 28 | 139 | Allowlist parsing, basename matching, minimal environment. |
+| `tests/test_core_parity.py` | 39 | 106 | SSRF verdicts match Hermes core's `is_safe_url`. |
+| **Total** | **284 (+1 skip)** | **2495** | |
 
-The split is deliberate. `test_frozen_oracles.py` encodes *what the product promises*;
-the other four files test the machinery that delivers it. If you change behaviour, the oracle table
-is what tells you whether you have changed the promise.
+The split is deliberate. `test_frozen_oracles.py` encodes *what the product promises*; the other
+files test the machinery that delivers it, with the four security-focused files covering the
+threats a maintainer would ask about.
+
+## Proving the security tests are not vacuous
+
+A test that passes with and without its fix proves nothing. `scripts/nonvacuous_check.py` reverts
+one hardening change at a time, runs the focused suites, and restores the file:
+
+```bash
+python3 scripts/nonvacuous_check.py
+```
+
+Every one of the 16 reverts must be caught. If any revert leaves the suite green, that test is
+reported as `VACUOUS!` and the script exits non-zero.
 
 ## Running the tests
 
@@ -128,7 +150,7 @@ its conservatism.
 
 | Test | Asserts |
 | --- | --- |
-| `test_tool_result_only_harvests_markers` | Tool output yields markers only, never patterns. |
+| `test_tool_result_harvests_nothing_at_all` | Tool output yields nothing, not even explicit markers. |
 | Prose rejection | `"I think we are probably fine."` extracts nothing. |
 | Dedupe | A duplicated sentence yields one record. |
 | Malformed input | Empty, whitespace and control characters extract nothing and do not raise. |
@@ -138,11 +160,50 @@ its conservatism.
 | Test | Asserts |
 | --- | --- |
 | Manifest consistency | Declared tools and hooks match what `register()` registers. |
-| `test_pre_llm_blocks_only_with_dependent_decision` | The gate fires only with a dependent decision. |
+| `test_pre_llm_warns_but_never_blocks` | `pre_llm_call` returns context, never a block action. |
+| `test_pre_verify_holds_only_the_affected_session` | The hard gate is session-scoped. |
 | `test_hooks_never_raise_on_hostile_input` | Every hook tolerates junk payloads. |
 | Tool handlers | Each returns valid JSON, including on error. |
 | Slash command | Argument parsing, including the unknown-subcommand usage message. |
 | Storage isolation | `HERMES_HOME` is redirected so tests never touch a real profile. |
+
+### `test_ssrf.py` — the HTTP policy
+
+67 cases covering schemes (`ftp`, `file`, `data`, `gopher`, `ws`), loopback (including `[::1]` and
+`127.1.2.3`), RFC1918 and CGNAT ranges, link-local, cloud-metadata endpoints (AWS, GCP, Alibaba,
+and an IPv4-mapped IPv6 form), DNS rebinding (a public name answered with a private address),
+ambiguous authorities (userinfo, backslash, percent-encoding, invalid port), DNS failure, and
+redirect handling (re-validation, loops, and a public hop that is followed). Every refusal must
+surface as `error`, never `fail`.
+
+### `test_recovery.py` — blocking, recovery and the error invariant
+
+The six behaviours a reviewer asks about: an invalidated assumption blocks its dependent decision;
+an unrelated session continues; the affected session can inspect; a verified resolution clears the
+block; a `drop` records no pass; and a transient failure does not erase a known contradiction.
+
+### `test_injection.py` — tool output is not a capture source
+
+Planted `ASSUMPTION:` markers in web pages, file listings and terminal output must create nothing
+and must never appear in re-injected context. Repeated injection attempts accumulate nothing.
+
+### `test_config.py` — every declared setting is wired
+
+Each option is set and an observable effect asserted, so a setting that stops being read fails the
+suite. Includes a manifest-vs-code agreement check and a version-agreement check.
+
+### `test_command_policy.py` — the execution policy in isolation
+
+Allowlist parsing (string and list forms, dedupe, bounds), rejection of paths and shell
+metacharacters, basename matching, and the minimal child environment.
+
+### `test_core_parity.py` — the SSRF policy matches core
+
+A frozen table of the verdict core's `tools.url_safety.is_safe_url` returns for 35 URLs. The table
+is checked on every run, so it works on a bare plugin checkout; when a Hermes checkout is
+importable the table is regenerated live and compared. `scripts/core_parity.py <hermes-checkout>`
+reproduces the comparison against a real core and prints the commit it verified. Verified at core
+`ff6781e8e1`: 35 cases, 0 mismatches.
 
 ## The frozen oracle table
 
@@ -196,7 +257,7 @@ has drifted from the code.
 
 ```
 Plugin Doctor: <path>
-  manifest: assumption-ledger 0.1.1 (standalone)
+  manifest: assumption-ledger 0.2.0 (standalone)
   OK: runtime discovery, manifest parsing, import, and registration passed
   registrations: 4 tool(s), 4 hook(s)
 ```

@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     depends_on_json TEXT NOT NULL,
     state TEXT NOT NULL,
     created_at REAL NOT NULL,
-    blocked_reason TEXT
+    blocked_reason TEXT,
+    session_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_key ON decisions(key);
 """
@@ -89,7 +90,19 @@ class LedgerStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created.
+
+        ``CREATE TABLE IF NOT EXISTS`` does not alter an existing table, so a ledger written by an
+        earlier version would be missing ``session_id``. Adding it in place keeps existing records
+        rather than forcing a reset.
+        """
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(decisions)")}
+        if "session_id" not in cols:
+            self._conn.execute("ALTER TABLE decisions ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         with self._lock:
@@ -259,10 +272,10 @@ class LedgerStore:
             if row is None:
                 self._conn.execute(
                     """INSERT INTO decisions (id, key, statement, depends_on_json, state,
-                       created_at, blocked_reason) VALUES (?,?,?,?,?,?,?)""",
+                       created_at, blocked_reason, session_id) VALUES (?,?,?,?,?,?,?,?)""",
                     (
                         dec.id, dec.key, dec.statement, _dumps(dec.depends_on),
-                        dec.state, dec.created_at, dec.blocked_reason,
+                        dec.state, dec.created_at, dec.blocked_reason, dec.session_id or "",
                     ),
                 )
             else:
@@ -277,10 +290,10 @@ class LedgerStore:
                     existing.blocked_reason = dec.blocked_reason
                 self._conn.execute(
                     """UPDATE decisions SET statement=?, depends_on_json=?, state=?,
-                       blocked_reason=? WHERE id=?""",
+                       blocked_reason=?, session_id=? WHERE id=?""",
                     (
                         existing.statement, _dumps(existing.depends_on), existing.state,
-                        existing.blocked_reason, existing.id,
+                        existing.blocked_reason, existing.session_id or "", existing.id,
                     ),
                 )
             self._conn.commit()
@@ -290,10 +303,10 @@ class LedgerStore:
         with self._lock:
             self._conn.execute(
                 """UPDATE decisions SET statement=?, depends_on_json=?, state=?,
-                   blocked_reason=? WHERE id=?""",
+                   blocked_reason=?, session_id=? WHERE id=?""",
                 (
                     dec.statement, _dumps(dec.depends_on), dec.state,
-                    dec.blocked_reason, dec.id,
+                    dec.blocked_reason, dec.session_id or "", dec.id,
                 ),
             )
             self._conn.commit()
@@ -321,6 +334,7 @@ class LedgerStore:
             id=row["id"], key=row["key"], statement=row["statement"],
             depends_on=_loads(row["depends_on_json"], []), state=row["state"],
             created_at=row["created_at"], blocked_reason=row["blocked_reason"],
+            session_id=row["session_id"] or "",
         )
 
 

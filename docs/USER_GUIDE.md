@@ -48,16 +48,16 @@ Two hooks run without you doing anything:
 | Hook | Fires | What it captures |
 | --- | --- | --- |
 | `post_llm_call` | after your reply | Explicit markers **and** natural-language patterns |
-| `post_tool_call` | after every tool call | Explicit markers **only** |
+| `post_tool_call` | after every tool call | **Nothing.** Tool output is never captured. |
 
-The asymmetry is deliberate. Tool output is where evidence lives; scanning it for natural-language
-patterns would manufacture assumptions you never made. A directory listing containing the string
-`file.txt exists` is not an assumption. So tool results only yield assumptions you explicitly
-marked.
+The asymmetry is deliberate, and it is about trust. Your own reply is your statement. Tool output
+is text you merely read: a web page, a file or a terminal listing can contain the literal string
+`Assumption: ...`, and storing it would plant a durable record that is re-injected into every later
+turn.
 
-A consequence worth knowing: **if you want a tool observation tracked, mark it.** Running `git
-rev-parse HEAD` does not create a `git_commit` assumption. Writing `ASSUMPTION: HEAD is at commit
-<sha>` does.
+A consequence worth knowing: **if you want a tool observation tracked, state it in your reply.**
+Running `git rev-parse HEAD` does not create a `git_commit` assumption. Writing `ASSUMPTION: HEAD
+is at commit <sha>` does, and so does an explicit `assumption_record` call.
 
 ## Writing assumptions the extractor understands
 
@@ -291,34 +291,45 @@ recorded assumption would halt the agent immediately. Untested is not the same a
 
 Only `INVALIDATED` blocks, and only the decisions that named it in `depends_on`.
 
-## When the plugin blocks a turn
+## When the plugin warns you
 
-The gate is conditional by construction: it fires only when an `INVALIDATED` assumption has at
-least one dependent decision. When it fires, you see:
+The warning is conditional by construction: it appears only when an `INVALIDATED` assumption has at
+least one dependent decision **recorded in the same session**. When it fires, you see:
 
 ```
-Assumption Ledger stopped this turn: a decision depends on an assumption that evidence has contradicted.
-- INVALIDATED: the file missing.txt exists (reason: path does not exist)
-  blocks decision: consume missing.txt
-Re-check the assumption or change the plan before continuing.
+Assumption Ledger warning: work recorded in this session depends on an assumption that evidence has contradicted.
+- INVALIDATED: the file missing.txt exists (id asm_4097c971c7d0)
+  relied on by: consume missing.txt
+This is a warning, not a stop. To clear it: /assumptions show <id>, /assumptions resolve <id> (re-check), or /assumptions drop <id> (retire).
 ```
+
+The turn is not stopped. You keep the turn you need to investigate. If it reaches the edited-code
+verify gate with the block still standing, `pre_verify` holds it there with the same instructions.
 
 Three ways forward:
 
-1. **Fix reality**, then re-check — `/assumptions check <id>`. If the evidence now passes, the
-   assumption becomes `VALID` and the decision unblocks.
-2. **Change the plan.** The dependency is what creates the gate. If the assumption is no longer
+1. **Fix reality, then re-check** — `/assumptions resolve <id>`. If the evidence now passes, the
+   assumption becomes `VALID` and the decision unblocks. `resolve` never forces a status: a still
+   failing check keeps the block.
+2. **Retire it** — `/assumptions drop <id>`. This removes it from the live set and unblocks its
+   decisions, and records that a user retired it without verification. Use this when the assumption
+   was simply wrong to track; the ledger will not claim it was ever proven.
+3. **Change the plan.** The dependency is what creates the warning. If the assumption is no longer
    load-bearing, record a new decision without it, or repair the old one with
    `link_decision` semantics.
-3. **Re-examine the assumption itself.** If it was wrong to state, the honest move is to record a
-   corrected one. Note that you cannot edit a record's statement; the id is derived from it, so a
-   corrected statement is a new record.
 
-What you should **not** do is treat the block as a bug to route around. It is reporting a real
+What you should **not** do is treat the warning as a bug to route around. It is reporting a real
 contradiction between what you claimed and what a deterministic check observed.
 
-An invalidated assumption that **nothing depends on** produces no block at all. The gate is
-dependency-aware, not global.
+An invalidated assumption that **nothing depends on** produces no warning at all. The gate is
+dependency-aware and session-scoped, not global.
+
+### Blocks do not cross sessions
+
+A decision recorded in session A does not warn session B, even when both run at once. This is
+deliberate: a contradiction raised in a long-running session must not halt every other session, and
+a background session must not silently stop your foreground work. When you resume the affected
+session, the warning is still there — it is read from durable storage, not memory.
 
 ## Everyday recipes
 

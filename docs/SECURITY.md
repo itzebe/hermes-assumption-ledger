@@ -41,9 +41,11 @@ work when the test contradicts it.
   agent chooses to state. It is a discipline aid, not a sandbox.
 - **A malicious plugin or a compromised Hermes host.** This plugin runs in the same process as
   everything else. It offers no isolation.
-- **A malicious check spec.** Specs come from the agent or the operator. See
-  [SQL interpolation in db_row_count](#sql-interpolation-in-db_row_count) and
-  [`command_succeeds` runs an arbitrary argv](#command_succeeds-runs-an-arbitrary-argv).
+- **A malicious check spec.** Specs come from the agent or the operator, and every one is now
+  subject to a policy: see [Command execution policy](#command-execution-policy),
+  [HTTP checks and SSRF](#http-checks-and-ssrf) and
+  [SQL predicate validation](#sql-predicate-validation). These limit what a spec can reach; they
+  do not make a hostile spec safe to record.
 - **Supply-chain compromise of dependencies.** The plugin has **no third-party runtime
   dependencies** (`pyproject.toml` declares `dependencies = []`), which removes most of this
   surface. It uses only the standard library.
@@ -55,7 +57,8 @@ work when the test contradicts it.
 | Boundary | Property |
 | --- | --- |
 | Process | Runs in-process with Hermes. No separate service, no daemon, no open port. |
-| Network | Makes **no** request of its own. The only outbound traffic is the HTTP checks you explicitly record. |
+| Network | Makes **no** request of its own. The only outbound traffic is the HTTP checks you explicitly record, each screened by the SSRF policy. |
+| Command execution | **Off by default.** Requires a configured `command_allowlist`; runs with a minimal environment. |
 | Credentials | Reads **no** credential. `requires_env: []`. |
 | Filesystem | Reads the paths named in check specs. Writes only inside its own data directory. |
 | Database | Opens SQLite files read-only (`mode=ro`). |
@@ -157,8 +160,10 @@ troubleshooting step; see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
   reason: "Do not echo the value: it may be a secret."
 - **File contents.** `file_contains` records the pattern that matched, not the matching text.
   `file_hash` records the digest, not the bytes.
-- **HTTP response bodies.** Only the status code and, for `http_json_field`, the resolved value at
-  the pointer.
+- **HTTP response bodies.** Only the status code, and for `http_json_field` the pointer and a
+  **bounded, type-tagged summary** of the value at that pointer. A scalar passes through; a string
+  is truncated to 120 characters; a list or object becomes a type and a length or key list. The raw
+  body is never stored.
 
 ### What may be sensitive in the database
 
@@ -188,8 +193,12 @@ in a check spec you recorded. Those requests:
 - read at most 200,000 bytes of the body;
 - honour the spec's `timeout`, defaulting to 5 seconds.
 
-`https` is not enforced; an `http://` URL in a check spec will be fetched over plaintext. Use
-`https://` for anything that matters.
+Only `http` and `https` are accepted; other schemes (`file`, `ftp`, `gopher`, `data`, `ws`) are
+refused before any request is made. `https` is not forced — an `http://` URL is fetched over
+plaintext — so use `https://` for anything that matters.
+
+Every URL is screened by the SSRF policy in `ledger/url_safety.py` before the request, and each
+redirect hop is re-screened. See [HTTP checks and SSRF](#http-checks-and-ssrf) below.
 
 ## External LLM calls
 
@@ -230,44 +239,84 @@ can run this plugin.
 matches registrations`, `declared middleware: matches registrations`, `built-in tool collisions: no
 collisions`, `no core override: no runtime rebinds of Hermes core`.
 
-## Known security limitations
+## Security controls and remaining limitations
 
-These are real. They are documented rather than hidden.
+The first three subsections describe controls that are now enforced. The rest are limitations that
+remain, documented rather than hidden.
 
-### SQL interpolation in db_row_count
+### SQL predicate validation
 
-`check_db_row_count` builds its query by string concatenation:
+`check_db_row_count` builds its query by string concatenation, so the caller-supplied parts are
+validated first:
 
 ```python
 sql = f'SELECT COUNT(*) FROM "{table}"'
 if where:
-    sql += f" WHERE {where}"
+    safe = _safe_where(where)
+    if safe is None:
+        return _unknown("where clause is not a supported simple predicate", table=table)
+    sql += f" WHERE {safe}"
 ```
 
-The `table` name is validated against `[A-Za-z_][A-Za-z0-9_]*` before it reaches the query, which
-is why a spec like `{"table": "a; DROP TABLE b"}` returns `error` rather than executing. The
-`where` clause, by contrast, is **not** validated or parameterised. It is passed through to
-SQLite verbatim.
+The `table` name must match `[A-Za-z_][A-Za-z0-9_]*`. The `where` clause must match a narrow
+grammar: one or more `column OP literal` atoms joined by `AND`/`OR`, with `OP` one of `=`, `!=`,
+`<>`, `<`, `<=`, `>`, `>=`, plus `IS NULL` / `IS NOT NULL`. Subqueries, function calls, comments,
+semicolons and unbalanced quotes are refused, and a refusal returns `error` (uncertainty), which
+never invalidates an assumption.
 
-The mitigations are real but partial: the connection is opened with `mode=ro`, so writes through
-it should fail; and `conn.execute(sql, params)` passes an empty parameter tuple, so there is no
-parameter-injection vector. But a read-only connection does not make an arbitrary predicate safe —
-`where` can still be used for expensive queries, and read-only enforcement is a SQLite feature
-rather than a plugin guarantee.
+The connection is additionally opened with `mode=ro`. That is defence in depth, not the control —
+the grammar is the control.
 
-**Guidance:** treat `where` as trusted input. Do not populate it from model output or from any
-source you do not control.
+**Guidance:** the clause still comes from the agent or the operator. Prefer `equals`/`min`/`max`
+with no `where` at all, and treat a `where` clause as input you control.
 
-### `command_succeeds` runs an arbitrary argv
+### Command execution policy
 
-The check is documented as "Run a read-only probe command and use its exit code as the verdict",
-but nothing enforces read-only. `ctx.runner(argv, ...)` executes whatever `argv` says. There is no
-shell involved — `subprocess.run` with a list and no `shell=True` — so shell metacharacters are not
-interpreted, but the binary and its arguments are executed with the plugin's privileges.
+Command execution is **disabled by default**. A `command_succeeds` check returns `error` without
+running anything until the operator configures a non-empty `command_allowlist`:
 
-**Guidance:** only record `command_succeeds` specs with an `argv` you would run yourself. An agent
-that can record an arbitrary spec can run an arbitrary command; that is a capability of the
-plugin, not a vulnerability in it, but it should be a conscious decision.
+```yaml
+command_allowlist: [git, node]
+```
+
+When enabled, the policy is:
+
+- the executable's **basename** must appear in the allowlist (`git`, not `/usr/bin/git`);
+- a check spec **cannot** widen the allowlist — the permitted set is read from plugin config only;
+- the process is started with `subprocess.run(argv, shell=False)`, so shell metacharacters are
+  arguments, not syntax;
+- the child gets a **minimal environment** (`PATH`, empty `HOME`, empty `TMPDIR`, `LC_ALL=C`,
+  `LANG=C`), so a probe cannot read the host's credentials;
+- a missing binary, a policy refusal or a timeout is an `error`, never a `fail`.
+
+An allowed *name* is still resolved through `PATH`, so an attacker who can write an executable
+named `git` earlier on the path could be run. Keep the allowlist short and trustworthy, and keep
+`PATH` under your control.
+
+### HTTP checks and SSRF
+
+Every URL in `http_status` or `http_json_field` is screened before the request, and every redirect
+hop is screened again:
+
+- only `http` and `https` schemes are accepted;
+- loopback (`127.0.0.0/8`, `::1`, `localhost`, `0.0.0.0`), RFC1918, CGNAT (`100.64.0.0/10`),
+  link-local (`169.254.0.0/16`, `fe80::/10`), unique-local (`fc00::/7`) and reserved ranges are
+  refused;
+- cloud-metadata endpoints (`169.254.169.254`, `169.254.170.2`, `100.100.100.200`,
+  `metadata.google.internal`, `fd00:ec2::254`) are refused **even when `allow_private_urls` is
+  true**;
+- a hostname is resolved and **every** returned address is checked, so a public name that resolves
+  to a private address is refused;
+- a DNS failure, an unparseable answer or an empty answer fails closed;
+- userinfo, percent-encoded hosts, backslashes, embedded whitespace and control characters in the
+  authority are refused;
+- redirects are followed manually, up to 5 hops, re-validating each target; a redirect to a blocked
+  destination is refused, not followed.
+
+A refusal is an `error`, never a `fail` — a blocked request is not evidence about the assumption.
+
+`allow_private_urls: true` opts back into loopback and private ranges for legitimate local
+development. It does **not** re-enable metadata endpoints.
 
 ### Absolute paths bypass `root`
 
@@ -286,9 +335,10 @@ So a check spec can read any file the process can read, including outside the wo
 
 ### No secret scanning before storage
 
-Provenance keeps up to 500 characters of source sentence, and `http_json_field` evidence keeps the
-resolved value. Neither is scanned for secrets. If the agent states an assumption containing a
-credential, it is stored in plaintext in the SQLite database.
+Provenance keeps up to 500 characters of the source sentence, and that text is not scanned for
+secrets, so an assumption whose statement contains a credential is stored in plaintext. An
+`http_json_field` check whose pointer resolves to a short secret string will also store up to 120
+characters of it in evidence. Neither is scanned.
 
 ### Unencrypted at rest
 

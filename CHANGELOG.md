@@ -7,41 +7,111 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Version status
 
-**There are no git tags and no GitHub releases for this project.** `v0.1.1` exists only as a
-version string in `plugin.yaml`, `pyproject.toml` and `ledger/__init__.py`. The catalog entry pins
-the commit `388cf029ccc5324c3f246423c8d461aa93d60090`, which is the authoritative reference for the
-reviewed `v0.1.1` code.
+**There are no git tags and no GitHub releases for this project.** `v0.2.0` exists only as a
+version string in `plugin.yaml`, `pyproject.toml`, `__init__.py` and `ledger/__init__.py`. The
+catalog entry pins a commit SHA, which is the authoritative reference for the reviewed code.
 
 That means the entries below describe the state of the code, not tagged artifacts. Use the commit
 SHA when you need an immutable reference.
 
 ### What the pinned commit does and does not contain
 
-The pinned commit `388cf029ccc5324c3f246423c8d461aa93d60090` is a documentation commit that touched
-only `.openhands/memory/`. Its tree does **not** contain the `docs/` directory described in this
-changelog, and its `README.md` is the earlier, shorter version.
+The catalog entry currently pins `388cf029ccc5324c3f246423c8d461aa93d60090`, which is the commit the
+maintainer reviewed for `v0.1.1`. That commit is a documentation commit; it does not contain the
+hardening described under `[0.2.0]` below. The catalog entry is re-pinned to the new commit as part
+of the same change set.
 
-What it does contain is the **plugin itself, unchanged**: `ledger/`, `__init__.py`, `plugin.yaml`,
-`tests/` and `pyproject.toml` at that commit are byte-identical to the state these documents
-describe and test. So the pinned SHA is the correct reference for the reviewed `v0.1.1` code, and
-the 73-test result and validator results in these docs apply to it exactly.
-
-The consequence for a reviewer: **reading the repository at the pinned SHA will not show you this
-documentation set.** To ship the docs, the catalog entry needs re-pinning to a commit that includes
-them. Until then, treat the pinned SHA as the reference for behaviour and the default branch as the
-reference for documentation.
+The consequence for a reviewer: **the pinned SHA in the catalog must match the SHA that contains
+the fixes you are reviewing.** If it does not, the catalog is stale.
 
 ### A note on version strings
 
-`__init__.py` declares `__version__ = "0.1.0"`, while `plugin.yaml`, `pyproject.toml` and
-`ledger/__init__.py` all declare `0.1.1`. This is an inconsistency, not a hidden release.
+All four version strings (`plugin.yaml`, `pyproject.toml`, `__init__.py`, `ledger/__init__.py`) are
+`0.2.0` and agree. `tests/test_config.py::test_versions_agree_everywhere` fails if they diverge
+again.
 
-The **effective** version is `0.1.1`: that is what Hermes reads from the manifest, what
-`hermes plugins doctor` reports, and what `ledger.__version__` returns. The `0.1.0` string in the
-adapter module is stale. If you need the version programmatically, read `plugin.yaml` or
-`ledger.__version__` — not the adapter module.
+## [0.2.0] — address the maintainer security review
 
-## [Unreleased]
+Responds to the `CHANGES_REQUESTED` review on catalog PR #150212. The review's concern was that
+several checks "reach further than the read-only description says". This release narrows what a
+check can reach, removes a prompt-injection channel, and makes blocking session-scoped and always
+escapable. **This is a behaviour change; upgrade deliberately.**
+
+### Security
+
+- **`command_succeeds` is disabled by default.** Execution now requires a non-empty
+  `command_allowlist` in plugin configuration. A check spec cannot widen the allowlist. The
+  executable's basename must be listed, the child gets a minimal environment (`PATH`, empty
+  `HOME`/`TMPDIR`, `LC_ALL=C`, `LANG=C`), and a refusal returns `error` — never `fail`. New module
+  `ledger/command_policy.py`.
+- **HTTP checks are screened for SSRF.** New module `ledger/url_safety.py` refuses non-HTTP
+  schemes, loopback, RFC1918, CGNAT, link-local, unique-local and reserved addresses, and blocks
+  cloud-metadata endpoints (`169.254.169.254`, `100.100.100.200`, `metadata.google.internal`, and
+  IPv4-mapped forms) **even when `allow_private_urls` is true**. Every DNS answer is checked, so a
+  public name resolving to a private address is refused. DNS failure fails closed. The policy
+  deliberately mirrors core's `tools.url_safety.is_safe_url`, and `scripts/core_parity.py` proves
+  agreement with it (35/35 cases at core `ff6781e8e1`).
+- **Redirects are re-validated per hop.** Redirects are followed manually, up to 5 hops, with the
+  policy applied to each target. A redirect to a blocked destination is refused, not followed.
+- **`db_row_count`'s `where` clause is validated.** It must match a simple-predicate grammar
+  (`column OP literal` joined by `AND`/`OR`, plus `IS [NOT] NULL`). Subqueries, function calls,
+  comments and semicolons are refused and return `error`.
+- **Tool output is no longer a capture source.** `post_tool_call` is a no-op and
+  `extract_from_tool_result` returns nothing. Previously a planted `Assumption: ...` marker in a
+  web page, file or terminal listing became a durable record re-injected into every later turn.
+- **`http_json_field` evidence is bounded and type-tagged.** The resolved value is summarised
+  through `_summarize` — scalars pass through, a string is truncated to 120 characters, and a list
+  or dict becomes `{"type": ..., "len"/"keys": ...}` — so an endpoint cannot plant an arbitrary
+  unbounded string into evidence that is later re-injected. The pointer and the match result are
+  recorded too.
+
+### Changed
+
+- **`pre_llm_call` warns; it no longer blocks.** It returns context with the recovery commands
+  instead of `{"action": "block"}`. Blocking before inference stopped the turn the agent needed to
+  investigate, in every session. The one hard gate is now `pre_verify`.
+- **Blocking is session-scoped.** Decisions carry a `session_id`; a contradiction recorded in one
+  session no longer holds another. Existing databases are migrated in place.
+- **Every declared setting is now read at runtime** through `PluginContext.get_config`:
+  `freshness_seconds`, `auto_check`, `max_reinject`, plus the new `command_allowlist` and
+  `allow_private_urls`. Malformed values fall back to defaults; an out-of-range integer is clamped.
+  `auto_check` now defaults to `false`.
+- `pre_verify`'s message names the recovery commands, so a held turn is always escapable.
+
+### Added
+
+- **`DROPPED` status and `/assumptions drop <id>`** — retire an assumption without verification.
+  It leaves the live set and unblocks its decisions, and records a `dropped` evidence row. It never
+  writes a pass verdict.
+- **`/assumptions resolve <id>` and the `assumption_resolve` tool** — re-check an assumption and
+  report the outcome. It cannot force a status: a still-failing check keeps the block.
+- **`assumption_drop` tool**, and `/assumptions config` to print effective settings.
+- `ledger/store.py` migrates an existing `decisions` table to add `session_id`.
+- Test suites `test_ssrf.py` (67), `test_recovery.py` (24), `test_injection.py` (13),
+  `test_config.py` (33), `test_command_policy.py` (28), `test_core_parity.py` (39). Total
+  **284 passing, 1 skipped** (the skip is the live-core comparison, which runs inside a Hermes
+  checkout).
+- `scripts/core_parity.py <hermes-checkout>` — proves the SSRF policy matches core's
+  `tools.url_safety.is_safe_url`. Verified at core `ff6781e8e1`: 35 cases, 0 mismatches.
+- `scripts/nonvacuous_check.py` — reverts each hardening change and asserts the suite catches it.
+  All 16 reverts are caught.
+
+### Fixed
+
+- A redirect returned as a normal 3xx response (rather than raised as `HTTPError`) did not expose
+  its `Location`, so it was never followed or re-validated. Both paths now report it.
+
+### Documentation
+
+- README, `docs/ARCHITECTURE.md`, `docs/API_REFERENCE.md`, `docs/SECURITY.md`,
+  `docs/CONFIGURATION.md`, `docs/USER_GUIDE.md`, `docs/TROUBLESHOOTING.md`, `docs/TESTING.md` and
+  `docs/VERIFICATION_AND_SAFETY.md` corrected to match the new behaviour. The previous docs
+  described blocking, tool-output capture, unread configuration and the two unguarded check kinds;
+  all four are now obsolete.
+
+## [0.1.2] — complete documentation set
+
+Documentation-only change on top of `0.1.1`. No production code changed.
 
 ### Added
 
@@ -109,33 +179,17 @@ The state of the plugin as submitted to the Hermes plugin catalog. Untagged.
 
 ## Known issues
 
-These are recorded as known issues rather than fixed silently, because fixing them changes
-behaviour and this changelog accompanies a documentation change.
+State as of `0.2.0`. Issues fixed in this release are listed first so the review trail is intact.
 
-### KI-1: Declared configuration options are never read
+### Resolved in 0.2.0
 
-`plugin.yaml` declares `freshness_seconds` (86400), `auto_check` (true) and `max_reinject` (25).
-No code path reads any of them.
-
-| Option | Actual behaviour |
-| --- | --- |
-| `freshness_seconds` | The engine uses `DEFAULT_FRESHNESS_SECONDS = 24 * 60 * 60`, equal to the declared default. |
-| `max_reinject` | `on_pre_llm_call` calls `render_reinjection()` with no argument, so the `limit=25` default applies. |
-| `auto_check` | No code path at all. `sweep_stale()` is unconditional. |
-
-**Impact:** behaviour matches the declared defaults exactly, so the manifest is not misleading about
-what the plugin does. The limitation is that the values cannot be tuned. Setting them passes
-Hermes' schema validation and has no effect. `auto_check: false` is not implementable today.
-
-**Workaround:** embed the engine directly —
-`LedgerEngine(store, freshness_seconds=...)` — or call `render_reinjection(limit=...)` yourself.
-The Hermes plugin surface does not expose either.
-
-**Evidence:** `grep -rn "get_config\|ctx.config\|register_config" --include=*.py .` returns no
-matches. Hermes' `_validate_plugin_config_schema` is validation-only: it warns, never blocks, and
-does not inject defaults.
-
-**Documented in:** `docs/CONFIGURATION.md`.
+| ID | Issue | Resolution |
+| --- | --- | --- |
+| KI-1 | Declared configuration options were never read | All five are now read through `PluginContext.get_config`, with `test_config.py` asserting an observable effect for each. |
+| KI-3 | Inconsistent version strings | All four strings are `0.2.0`; `test_versions_agree_everywhere` guards it. |
+| KI-6 | `db_row_count` interpolated the `where` clause | The clause is validated against a simple-predicate grammar; a refusal returns `error`. |
+| KI-7 | `command_succeeds` ran an arbitrary `argv` | Execution is off by default, gated by a configured `command_allowlist`, and runs with a minimal environment. |
+| KI-10 | `http_json_field` stored the resolved value unbounded | Evidence now stores a bounded, type-tagged summary (`_summarize`); a string is truncated to 120 characters. A secret in a statement is still stored. |
 
 ### KI-2: `CheckContext.cwd` is accepted but never read
 
@@ -149,52 +203,18 @@ is invisible in the default path — but an embedder setting only `cwd` will be 
 **Workaround:** set `cwd` in the check spec:
 `{"kind": "git_branch", "branch": "main", "cwd": "/path/to/repo"}`.
 
-**Documented in:** `docs/CONFIGURATION.md`, `docs/TROUBLESHOOTING.md`.
-
-### KI-3: Inconsistent version string
-
-`__init__.py` declares `0.1.0`; `plugin.yaml`, `pyproject.toml` and `ledger/__init__.py` declare
-`0.1.1`. The effective version is `0.1.1`.
-
-**Impact:** cosmetic, with one trap: a compatibility check that imports the version from the
-adapter module reads the wrong value.
-
-**Workaround:** read `plugin.yaml` or `ledger.__version__`.
-
 ### KI-4: No git tags or releases
 
-`v0.1.1` exists only in the manifest. There is no immutable tag to reference.
+`v0.2.0` exists only in the manifest. There is no immutable tag to reference.
 
-**Workaround:** use the commit SHA `388cf029ccc5324c3f246423c8d461aa93d60090`, which the catalog
-entry pins and which remains reachable.
+**Workaround:** use the pinned commit SHA from the catalog entry.
 
 ### KI-5: No continuous integration
 
 There is no `.github/workflows/` directory. The suite is run locally.
 
-**Impact:** nothing enforces that tests pass before a merge. A suggested minimal workflow is in
-`docs/TESTING.md`.
-
-### KI-6: `db_row_count` interpolates the `where` clause into SQL
-
-The `table` name is validated against `[A-Za-z_][A-Za-z0-9_]*`; the `where` clause is not validated
-or parameterised. The connection is read-only, which limits the blast radius but does not make an
-arbitrary predicate safe.
-
-**Impact:** a `where` value must be treated as trusted input. Do not populate it from model output.
-
-**Documented in:** `docs/SECURITY.md`.
-
-### KI-7: `command_succeeds` executes an arbitrary `argv`
-
-The check is documented as a read-only probe, and nothing enforces that. `ctx.runner(argv, ...)`
-runs whatever is specified, with the plugin's privileges. No shell is involved, so shell
-metacharacters are not interpreted.
-
-**Impact:** an agent that can record a check spec can run a command. That is a capability of the
-plugin, not a vulnerability in it, but it should be a conscious decision.
-
-**Documented in:** `docs/SECURITY.md`.
+**Impact:** nothing enforces that tests pass before a merge. `scripts/nonvacuous_check.py` runs the
+revert-and-catch check, but it is manual. A suggested minimal workflow is in `docs/TESTING.md`.
 
 ### KI-8: Absolute paths in check specs bypass the workspace root
 
@@ -215,15 +235,6 @@ against accidental loss, not against a determined local adversary.
 
 **Documented in:** `docs/SECURITY.md`.
 
-### KI-10: No secret scanning before storage
-
-Provenance keeps up to 500 characters of the source sentence, and `http_json_field` evidence keeps
-the resolved value. Neither is scanned for secrets. Environment-variable values are deliberately
-never recorded, and file contents are not recorded — but a secret in a sentence the agent wrote
-will be stored.
-
-**Documented in:** `docs/SECURITY.md`.
-
 ### KI-11: `unsupported` checks never resolve
 
 A marker with no checkable form is stored with `{"kind": "unsupported"}` and stays `UNVERIFIED`
@@ -237,6 +248,18 @@ Extraction is conservative by design, so it misses things.
 
 ### KI-13: The gate raises cost, it does not enforce
 
-`pre_llm_call` blocks only when a **recorded decision** depends on an invalidated assumption. An
-agent that never calls `assumption_decide` is never blocked. Hermes also caps verify-gate nudges,
-so a determined agent can proceed past `pre_verify`.
+`pre_verify` holds a turn only when a **recorded decision in the same session** depends on an
+invalidated assumption. An agent that never calls `assumption_decide` is never held. Hermes also
+caps verify-gate nudges, so a determined agent can proceed.
+
+**This is deliberate.** The alternative — blocking inference in every session — was the `0.1.1`
+behaviour and was removed because it stopped the turn the agent needed to investigate, everywhere
+at once.
+
+### KI-14: A command allowlist matches the basename only
+
+An allowed name (`git`) is resolved through `PATH`. An attacker who can write an executable named
+`git` earlier on the path could be run.
+
+**Impact:** the allowlist reduces the capability, it does not eliminate it. Keep it short and keep
+`PATH` under your control.

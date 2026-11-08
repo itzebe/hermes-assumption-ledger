@@ -20,12 +20,20 @@ VALID = "VALID"
 INVALIDATED = "INVALIDATED"
 UNVERIFIED = "UNVERIFIED"
 STALE = "STALE"
-STATUSES = (VALID, INVALIDATED, UNVERIFIED, STALE)
+# DROPPED is not a verification outcome. It records that a user explicitly retired an assumption
+# without evidence either way, so it stops blocking work without claiming to have been proven.
+DROPPED = "DROPPED"
+STATUSES = (VALID, INVALIDATED, UNVERIFIED, STALE, DROPPED)
+# Statuses the agent should still honour (re-injected, and eligible to block). DROPPED is not one.
+LIVE_STATUSES = (VALID, STALE, UNVERIFIED)
 
 # --- Verifier verdicts (internal to one check attempt) --------------------------------------
 PASS = "pass"
 FAIL = "fail"
 ERROR = "error"  # timeout / rate limit / provider unavailable / missing evidence
+# Evidence-only marker for a user retirement. Never produced by a verifier, and never read as a
+# verification result, so a drop cannot fabricate a successful check.
+DROPPED_EVIDENCE = "dropped"
 
 VERDICTS = (PASS, FAIL, ERROR)
 
@@ -154,7 +162,12 @@ class Evidence:
 
 @dataclass
 class Decision:
-    """A plan step or action that depends on one or more assumptions."""
+    """A plan step or action that depends on one or more assumptions.
+
+    ``session_id`` scopes the decision to the session that recorded it. Blocking is per-session:
+    a contradiction recorded while working in one session must not stop unrelated sessions, and
+    it must not stop the session that needs to investigate it.
+    """
 
     id: str
     statement: str
@@ -163,6 +176,7 @@ class Decision:
     key: str = ""
     created_at: float = field(default_factory=_now)
     blocked_reason: Optional[str] = None
+    session_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -173,6 +187,7 @@ class Decision:
             "state": self.state,
             "created_at": self.created_at,
             "blocked_reason": self.blocked_reason,
+            "session_id": self.session_id,
         }
 
 
@@ -192,15 +207,22 @@ def status_after_check(
       record degrades to STALE instead: we still have the old evidence, we simply cannot
       refresh it right now.
 
-    An existing INVALIDATED is the one exception to the ``error`` rule. A contradiction stands
-    until evidence refutes it; uncertainty only means we could not re-check, not that the
-    contradiction went away. Degrading it to STALE would let a provider outage silently unblock
-    work that depends on it, which is the failure this plugin exists to prevent.
+    Two statuses are sticky against ``error``:
+
+    * INVALIDATED — a contradiction stands until evidence refutes it. Uncertainty only means we
+      could not re-check, not that the contradiction went away. Degrading it to STALE would let a
+      provider outage silently unblock work that depends on it, which is the failure this plugin
+      exists to prevent.
+    * DROPPED — a user retired this assumption. A failed re-check must not quietly resurrect it
+      into the live set as UNVERIFIED.
+
+    A definitive verdict still wins over both: a later ``pass`` or ``fail`` is real evidence and
+    is recorded as such.
     """
     if verdict == PASS:
         return VALID
     if verdict == FAIL:
         return INVALIDATED
-    if previous_status == INVALIDATED:
-        return INVALIDATED
+    if previous_status in (INVALIDATED, DROPPED):
+        return previous_status
     return STALE if had_fresh_evidence else UNVERIFIED

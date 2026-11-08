@@ -168,10 +168,10 @@ the evidence, but they only affect the verdict when the spec sets `include_untra
 value is not recorded, because it may be a secret.
 
 **`db_*` checks open read-only.** Both use `sqlite3.connect(f"file:{db}?mode=ro", uri=True)`.
-`db_row_count` additionally validates the table name against `[A-Za-z_][A-Za-z0-9_]*` and returns
-`error` for anything else, which is what makes a spec like
-`{"table": "a; DROP TABLE b"}` safe — it never reaches SQL. The `where` clause, by contrast, *is*
-interpolated verbatim; see [SECURITY.md](SECURITY.md#sql-interpolation-in-db_row_count).
+`db_row_count` validates the table name against `[A-Za-z_][A-Za-z0-9_]*` and returns `error` for
+anything else, which is what makes a spec like `{"table": "a; DROP TABLE b"}` safe — it never
+reaches SQL. The `where` clause is validated against a narrow simple-predicate grammar and returns
+`error` when it does not match; see [SECURITY.md](SECURITY.md#sql-predicate-validation).
 
 **`http_json_field` uses a dotted pointer**, not RFC 6901 JSON Pointer. `a.b.0.c` walks dict keys
 and list indices. A missing key or an out-of-range index returns `_MISSING`, which is reported as
@@ -293,9 +293,10 @@ Three properties follow, all of them intentional:
    repaired assumption unblocks the decision. `test_decision_recovers_when_assumption_repaired`
    covers this.
 
-`critical_blockers()` narrows this to what a gate should act on: `INVALIDATED` assumptions that
-have at least one dependent decision. An invalidated assumption nobody depends on is *not* a
-blocker, so it never stops a turn.
+`critical_blockers(session_id=...)` narrows this to what a gate should act on: `INVALIDATED`
+assumptions that have at least one dependent decision *in the given session*. An invalidated
+assumption nobody depends on is *not* a blocker, so it never stops a turn, and a decision recorded
+in another session is not this session's concern.
 
 ## Pre-proceed safety behaviour
 
@@ -307,17 +308,21 @@ Runs once per turn, before inference. Three possible outcomes:
 
 | Condition | Return | Effect |
 | --- | --- | --- |
-| A decision depends on an `INVALIDATED` assumption | `{"action": "block", "message": ...}` | Turn ends before the model is called. The message names each assumption, its invalidation reason, and the decisions it blocks. |
+| A decision *in this session* depends on an `INVALIDATED` assumption | `{"context": ...}` | A warning is prepended to the injected context. The turn proceeds. |
 | No blocker, but live assumptions exist | `{"context": ...}` | The compact assumption block is injected into the user message. |
 | No blocker, no live assumptions | `None` | The gate is inert. |
 | Any exception | `None` (logged) | Fails open. |
 
-Real output of the block path, captured from the running plugin:
+`pre_llm_call` never returns `{"action": "block"}`. Stopping the turn before inference would prevent
+the agent from investigating and clearing the problem, and would stop it in every session. The one
+hard gate is `pre_verify`.
+
+Real output of the warning path, captured from the running plugin:
 
 ```
-Assumption Ledger stopped this turn: a decision depends on an assumption that evidence has contradicted.
-- INVALIDATED: the file missing.txt exists (reason: path does not exist)
-  blocks decision: consume missing.txt
+Assumption Ledger warning: work recorded in this session depends on an assumption that evidence has contradicted.
+- INVALIDATED: the file missing.txt exists (id asm_4097c971c7d0)
+  relied on by: consume missing.txt
 Re-check the assumption or change the plan before continuing.
 ```
 
@@ -366,7 +371,12 @@ python -m pytest tests/test_frozen_oracles.py -v
 | Propagation reaches only dependents | `test_invalidation_propagates_only_to_dependents` |
 | A repaired assumption unblocks | `test_decision_recovers_when_assumption_repaired` |
 | Malformed specs are `ERROR` | `test_O11_malformed_extraction_output` |
-| The gate is inert without a dependent decision | `test_pre_llm_blocks_only_with_dependent_decision` |
+| The gate is inert without a dependent decision | `test_pre_llm_warns_but_never_blocks` |
+| The gate is scoped to the affected session | `test_pre_verify_holds_only_the_affected_session` |
+| An unrelated session continues | `test_unrelated_session_is_never_blocked` |
+| A re-check clears a block | `test_resolve_pass_sets_valid_and_clears_the_block` |
+| A drop records no pass | `test_drop_records_no_pass_and_marks_dropped` |
+| An outage keeps a contradiction | `test_transient_failure_does_not_clear_a_contradiction` |
 | Hooks never raise on hostile input | `test_hooks_never_raise_on_hostile_input` |
 
 ### Are these tests non-vacuous?

@@ -37,10 +37,14 @@ def plugin(tmp_path, monkeypatch):
 class RecordingContext:
     """Minimal stand-in for the Hermes PluginContext, recording every registration."""
 
-    def __init__(self):
+    def __init__(self, config=None):
         self.tools = {}
         self.hooks = {}
         self.commands = {}
+        self._config = dict(config or {})
+
+    def get_config(self, key, default=None):
+        return self._config.get(key, default)
 
     def register_tool(self, name, toolset, schema, handler, **kw):
         self.tools[name] = {"toolset": toolset, "schema": schema, "handler": handler, **kw}
@@ -56,7 +60,8 @@ def test_register_declares_expected_surface(plugin):
     ctx = RecordingContext()
     plugin.register(ctx)
     assert set(ctx.tools) == {
-        "assumption_record", "assumption_check", "assumption_status", "assumption_decide"
+        "assumption_record", "assumption_check", "assumption_status", "assumption_decide",
+        "assumption_resolve", "assumption_drop",
     }
     assert set(ctx.hooks) == {"pre_llm_call", "post_llm_call", "pre_verify", "post_tool_call"}
     assert "assumptions" in ctx.commands
@@ -117,7 +122,8 @@ def test_post_llm_call_captures_and_pre_llm_reinjects(plugin):
     assert "a.txt" in out["context"]
 
 
-def test_pre_llm_blocks_only_with_dependent_decision(plugin, tmp_path):
+def test_pre_llm_warns_but_never_blocks(plugin, tmp_path):
+    """pre_llm_call must never veto: the agent needs the turn to investigate and recover."""
     ctx = RecordingContext()
     plugin.register(ctx)
     rec = json.loads(ctx.tools["assumption_record"]["handler"](
@@ -125,45 +131,64 @@ def test_pre_llm_blocks_only_with_dependent_decision(plugin, tmp_path):
          "check": {"kind": "file_exists", "path": str(tmp_path / "missing.txt")}}
     ))
     json.loads(ctx.tools["assumption_check"]["handler"]({"id": rec["id"]}))  # INVALIDATED
-    # No decision depends on it yet: the gate must stay inert.
-    assert plugin.on_pre_llm_call() is None
+    # No decision depends on it yet: nothing to warn about.
+    assert plugin.on_pre_llm_call(session_id="s1") is None
     json.loads(ctx.tools["assumption_decide"]["handler"](
-        {"statement": "consume missing.txt", "depends_on": [rec["id"]]}
+        {"statement": "consume missing.txt", "depends_on": [rec["id"]]}, session_id="s1"
     ))
-    blocked = plugin.on_pre_llm_call()
-    assert blocked and blocked["action"] == "block"
-    assert "INVALIDATED" in blocked["message"]
+    warned = plugin.on_pre_llm_call(session_id="s1")
+    assert warned and "context" in warned
+    assert "action" not in warned, "pre_llm_call must not block"
+    assert "INVALIDATED" in warned["context"]
+
+
+def test_pre_verify_holds_only_the_affected_session(plugin, tmp_path):
+    """The hard gate is session-scoped: another session must be unaffected."""
+    ctx = RecordingContext()
+    plugin.register(ctx)
+    rec = json.loads(ctx.tools["assumption_record"]["handler"](
+        {"statement": "the file missing2.txt exists",
+         "check": {"kind": "file_exists", "path": str(tmp_path / "missing2.txt")}}
+    ))
+    json.loads(ctx.tools["assumption_check"]["handler"]({"id": rec["id"]}))  # INVALIDATED
+    json.loads(ctx.tools["assumption_decide"]["handler"](
+        {"statement": "consume missing2.txt", "depends_on": [rec["id"]]}, session_id="s1"
+    ))
+    assert plugin.on_pre_verify(session_id="s1")["action"] == "continue"
+    assert plugin.on_pre_verify(session_id="other") is None
 
 
 def test_pre_verify_continues_only_when_blocked(plugin, tmp_path):
     ctx = RecordingContext()
     plugin.register(ctx)
-    assert plugin.on_pre_verify() is None
+    assert plugin.on_pre_verify(session_id="s1") is None
     rec = json.loads(ctx.tools["assumption_record"]["handler"](
         {"statement": "the file nope.txt exists",
          "check": {"kind": "file_exists", "path": str(tmp_path / "nope.txt")}}
     ))
     json.loads(ctx.tools["assumption_check"]["handler"]({"id": rec["id"]}))
     json.loads(ctx.tools["assumption_decide"]["handler"](
-        {"statement": "use nope.txt", "depends_on": [rec["id"]]}
+        {"statement": "use nope.txt", "depends_on": [rec["id"]]}, session_id="s1"
     ))
-    out = plugin.on_pre_verify()
+    out = plugin.on_pre_verify(session_id="s1")
     assert out and out["action"] == "continue"
 
 
-def test_post_tool_call_harvests_marker(plugin):
+def test_post_tool_call_never_persists_markers(plugin):
+    """Untrusted tool output must not create a durable, re-injected assumption."""
     ctx = RecordingContext()
     plugin.register(ctx)
     plugin.on_post_tool_call(tool_name="terminal", result="ASSUMPTION: out/report.csv exists")
+    plugin.on_post_tool_call(tool_name="fetch", result="Assumption: the deploy succeeded")
     summary = json.loads(ctx.tools["assumption_status"]["handler"]({}))
-    assert summary["total"] == 1
+    assert summary["total"] == 0
 
 
 def test_hooks_never_raise_on_hostile_input(plugin):
     ctx = RecordingContext()
     plugin.register(ctx)
     for hook in (plugin.on_pre_llm_call, plugin.on_pre_verify):
-        hook(**{"unexpected": object()})
+        hook(**{"unexpected": object(), "session_id": "s"})
     plugin.on_post_llm_call(assistant_response=None)
     plugin.on_post_tool_call(tool_name=None, result={"weird": object()})
     # A non-dict, non-str result must not crash the hook.

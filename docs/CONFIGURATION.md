@@ -3,12 +3,12 @@
 This document covers the manifest configuration schema, the check specifications you write into
 assumptions, environment variables, and storage paths.
 
-**Read [Declared configuration options are not currently read at runtime](#declared-configuration-options-are-not-currently-read-at-runtime)
-before you try to change any plugin setting.** It describes a real gap between the manifest and the
-implementation.
+Every declared option is read at runtime through the sanctioned `PluginContext.get_config` seam.
+[`tests/test_config.py`](../tests/test_config.py) asserts that each one has an observable effect,
+so a setting that stops being wired fails the suite.
 
 - [Declared configuration options](#declared-configuration-options)
-- [Declared configuration options are not currently read at runtime](#declared-configuration-options-are-not-currently-read-at-runtime)
+- [How the values are read](#how-the-values-are-read)
 - [Check specifications](#check-specifications)
 - [Environment variables](#environment-variables)
 - [Storage paths](#storage-paths)
@@ -16,67 +16,43 @@ implementation.
 
 ## Declared configuration options
 
-`plugin.yaml` declares a `config_schema` with three options:
+`plugin.yaml` declares a `config_schema` with five options:
 
-| Option | Type | Declared default | Declared meaning |
+| Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `freshness_seconds` | int | `86400` | How long a successful check stays `VALID` before it degrades to `STALE` and needs re-checking. A pass is never treated as permanently true. |
-| `auto_check` | bool | `true` | Re-verify `VALID` assumptions whose evidence has aged out when the plugin next runs a check. |
-| `max_reinject` | int | `25` | Maximum live assumptions re-injected into context on each turn. |
+| `freshness_seconds` | int | `86400` | How long a successful check stays `VALID` before it degrades to `STALE` and needs re-checking. A pass is never treated as permanently true. Bounded to 1..31536000. |
+| `auto_check` | bool | `false` | Verify an assumption immediately when it is recorded, instead of leaving it `UNVERIFIED` until a check is requested. Off by default: it makes capture perform I/O. |
+| `max_reinject` | int | `25` | Maximum live assumptions re-injected into context on each turn. Bounded to 1..200. |
+| `command_allowlist` | list | `[]` | Executable names `command_succeeds` may run. Empty disables command checks entirely. |
+| `allow_private_urls` | bool | `false` | Permit HTTP checks to reach loopback, private, link-local and CGNAT hosts. Cloud-metadata endpoints stay blocked regardless. |
 
 Hermes validates this schema. Its loader calls `validate_config_schema(...)` and **logs a warning**
 if a value under `plugins.entries.<plugin-id>.settings` violates the declared type — it never
 blocks the load, and it does not inject defaults.
 
-## Declared configuration options are not currently read at runtime
+## How the values are read
 
-This is the honest state of the implementation, and it is a limitation rather than a feature.
+At registration the adapter captures `ctx.get_config` and stores it in `_CONFIG_GETTER`. On first
+use it resolves the effective configuration once and caches it on the host:
 
-**None of the three declared options is read by any code path.** The behaviour they describe is
-present, but the values are compiled-in constants rather than settings:
-
-| Declared option | What actually happens | Where |
+| Option | Effect | Where |
 | --- | --- | --- |
-| `freshness_seconds` | The engine is constructed with `DEFAULT_FRESHNESS_SECONDS = 24 * 60 * 60`, i.e. exactly the declared default of 86400. Nothing reads a configured value. | `ledger/engine.py` |
-| `max_reinject` | `on_pre_llm_call` calls `engine.render_reinjection()` with no argument, so the parameter default `limit=25` applies — again matching the declared default. | `__init__.py`, `ledger/engine.py` |
-| `auto_check` | There is no code path for this option at all. `sweep_stale()` is unconditional; it is called from `summary()` and `on_pre_verify`. | `ledger/engine.py` |
+| `freshness_seconds` | Passed to `LedgerEngine(freshness_seconds=...)`; bounds the `VALID` -> `STALE` window used by `sweep_stale`. | `__init__.py`, `ledger/engine.py` |
+| `auto_check` | Passed to `LedgerEngine(auto_check_on_capture=...)`; when true, capture and `add_assumption` verify immediately. | `__init__.py`, `ledger/engine.py` |
+| `max_reinject` | Passed to `LedgerEngine(reinject_limit=...)`; caps the live-assumption lines in `render_reinjection`. | `__init__.py`, `ledger/engine.py` |
+| `command_allowlist` | Becomes `CheckContext.command_allowlist`; empty means `command_succeeds` returns `error` without executing. | `ledger/command_policy.py`, `ledger/verifiers.py` |
+| `allow_private_urls` | Becomes `CheckContext.allow_private_urls`; cloud-metadata endpoints stay blocked either way. | `ledger/url_safety.py`, `ledger/verifiers.py` |
 
-### How this was verified
+Coercion is defensive. A value that will not parse falls back to the default, an out-of-range
+integer is clamped, and a config-backend exception logs and uses the safe defaults rather than
+disabling the plugin. `/assumptions config` prints the effective values.
+
+Verify the wiring yourself:
 
 ```bash
-# No configuration is read anywhere in the plugin:
-grep -rn "get_config\|ctx.config\|register_config" --include=*.py .
-# -> no matches
+# Every declared key is named in the implementation, and every key the code reads is declared:
+python3 -m pytest tests/test_config.py -q
 ```
-
-The adapter never calls Hermes' `ctx.get_config(...)`, and no module reads `freshness_seconds`,
-`auto_check` or `max_reinject` from configuration. The only occurrences of those identifiers are
-the constructor parameter and the module constant, both with the same value as the declared
-default.
-
-### What this means for you
-
-- **You cannot currently tune these three values** by editing Hermes configuration. Setting them
-  will validate but have no effect on behaviour.
-- **The effective behaviour matches the declared defaults exactly**, so the documented defaults are
-  accurate descriptions of what the plugin does. Nothing is silently different from the manifest.
-- **If you need a different freshness window**, the supported route today is to use the engine
-  directly (`LedgerEngine(store, freshness_seconds=...)`) or to embed it, as the tests do. The
-  Hermes plugin surface does not expose it.
-- **Treat `auto_check: false` as unimplemented.** You cannot turn the stale sweep off.
-
-This gap is recorded rather than silently patched, because fixing it would be a behaviour change
-and this is a documentation change. See [CHANGELOG.md](../CHANGELOG.md#known-issues) and
-[CONTRIBUTING.md](../CONTRIBUTING.md).
-
-### A related inconsistency
-
-`__init__.py` defines `__version__ = "0.1.0"`, while `plugin.yaml`, `pyproject.toml` and
-`ledger/__init__.py` all declare `0.1.1`. The plugin's **effective** version is `0.1.1`: that is
-what Hermes reads from the manifest (and what `hermes plugins doctor` reports), and what
-`ledger.__version__` returns. The `0.1.0` string in the adapter module is a stale leftover. If you
-import the version for a compatibility check, read `plugin.yaml` or `ledger.__version__`, not the
-adapter module.
 
 ## Check specifications
 
@@ -126,16 +102,28 @@ Example:
 
 ### Commands
 
+Command execution is **disabled by default**. It requires a non-empty `command_allowlist` in the
+plugin configuration; until then every `command_succeeds` check returns `error` without running
+anything.
+
 | Kind | Field | Type | Required | Notes |
 | --- | --- | --- | --- | --- |
 | `command_succeeds` | `argv` | array of strings | yes | Must be non-empty and all strings. Executed directly — no shell. |
 | | `cwd` | string | no | Default `"."`. |
 | | `timeout` | number | no | Defaults to `ctx.default_timeout`. |
 
-Exit code 0 is a `pass`; any non-zero exit is a `fail`. This is documented as a read-only probe;
-the plugin does not enforce that. See [SECURITY.md](SECURITY.md#command_succeeds-runs-an-arbitrary-argv).
+The executable's basename must appear in `command_allowlist`, or the check returns `error`. A check
+spec cannot add to the allowlist. The child process gets a minimal environment (`PATH`, empty
+`HOME`, empty `TMPDIR`, `LC_ALL=C`, `LANG=C`), so a tool cannot read the host's credentials.
+
+Exit code 0 is a `pass`; any non-zero exit is a `fail`. A missing binary, a policy refusal or a
+timeout is an `error`. See [SECURITY.md](SECURITY.md#command-execution-policy).
 
 ### HTTP
+
+Every URL is checked against the SSRF policy before the request is made, and each redirect hop is
+re-checked. Loopback, private, link-local, CGNAT and reserved addresses are refused; cloud-metadata
+endpoints are refused even when `allow_private_urls` is true. A refusal is an `error`, not a `fail`.
 
 | Kind | Field | Type | Required | Notes |
 | --- | --- | --- | --- | --- |
@@ -146,6 +134,10 @@ the plugin does not enforce that. See [SECURITY.md](SECURITY.md#command_succeeds
 | | `pointer` | string | yes | Dotted path, e.g. `"a.b.0.c"`. This is not RFC 6901 JSON Pointer. |
 | | `equals` | any | no | When omitted, mere presence of the pointer is a `pass`. |
 | | `timeout` | number | no | |
+
+Only `http` and `https` are accepted. A 4xx is a `fail`; a 5xx, a 429, a timeout or a transport
+error is an `error`. Response bodies are bounded at 200 KB. See
+[docs/SECURITY.md](SECURITY.md#http-checks-and-ssrf).
 
 Example:
 
@@ -167,10 +159,15 @@ Both open the database read-only (`mode=ro`).
 | | `table` | string | yes | Exact match against `sqlite_master`. |
 | `db_row_count` | `path` | string | yes | |
 | | `table` | string | yes | Must match `[A-Za-z_][A-Za-z0-9_]*`; otherwise `error`. |
-| | `where` | string | no | Interpolated verbatim into the SQL. Only use values you control. |
+| | `where` | string | no | Validated against a simple-predicate grammar before use. Anything else is an `error`. |
 | | `equals` | int | no | Exact count. |
 | | `min` | int | no | Lower bound. |
 | | `max` | int | no | Upper bound. |
+
+The `where` clause accepts one or more `column OP literal` atoms joined by `AND`/`OR`, with `OP` one
+of `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, plus `IS NULL` / `IS NOT NULL`. Subqueries, function
+calls, comments and semicolons are refused. A refused clause returns `error`, which never
+invalidates an assumption.
 
 If none of `equals`/`min`/`max` is given, any count passes.
 

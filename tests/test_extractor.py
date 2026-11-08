@@ -78,12 +78,16 @@ def test_marker_without_checkable_form_is_captured_unsupported():
     assert out[0].check["kind"] == "unsupported"
 
 
-def test_tool_result_only_harvests_markers():
-    # Raw tool output prose must not manufacture assumptions.
+def test_tool_result_harvests_nothing_at_all():
+    """Tool output is never an assumption source, not even for explicit markers.
+
+    Raw tool prose must not manufacture assumptions, and a marker planted in outside text must not
+    become a durable record either.
+    """
     out = extract_from_tool_result("terminal", "total 4\ndrwxr-xr-x 2 user user 4096 file.txt exists here")
     assert out == []
-    out2 = extract_from_tool_result("terminal", "ASSUMPTION: out/report.csv exists")
-    assert len(out2) == 1
+    planted = extract_from_tool_result("terminal", "ASSUMPTION: out/report.csv exists")
+    assert planted == [], "a marker in tool output must not be harvested"
 
 
 def test_malformed_inputs_never_raise():

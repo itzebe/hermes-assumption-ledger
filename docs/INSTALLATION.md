@@ -153,7 +153,7 @@ Expected result:
 
 ```
 Plugin Doctor: <path>
-  manifest: assumption-ledger 0.1.1 (standalone)
+  manifest: assumption-ledger 0.2.0 (standalone)
   OK: runtime discovery, manifest parsing, import, and registration passed
   registrations: 4 tool(s), 4 hook(s)
 ```

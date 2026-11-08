@@ -4,7 +4,7 @@ Diagnostic procedures for when the plugin is not behaving as expected.
 
 - [First: get the real state](#first-get-the-real-state)
 - [The plugin does nothing](#the-plugin-does-nothing)
-- [The plugin blocks a turn unexpectedly](#the-plugin-blocks-a-turn-unexpectedly)
+- [The plugin warns or holds a turn unexpectedly](#the-plugin-warns-or-holds-a-turn-unexpectedly)
 - [The plugin does not block when you expect it to](#the-plugin-does-not-block-when-you-expect-it-to)
 - [Assumptions are not being captured](#assumptions-are-not-being-captured)
 - [A check always returns UNVERIFIED](#a-check-always-returns-unverified)
@@ -69,9 +69,9 @@ hermes plugins doctor <path-to-plugin>
 Expected:
 
 ```
-manifest: assumption-ledger 0.1.1 (standalone)
+manifest: assumption-ledger 0.2.0 (standalone)
 OK: runtime discovery, manifest parsing, import, and registration passed
-registrations: 4 tool(s), 4 hook(s)
+registrations: 6 tool(s), 4 hook(s)
 ```
 
 If the doctor reports a problem, it is almost always the manifest or the import — see the next two
@@ -90,7 +90,7 @@ cd <path-to-plugin>
 python -c "import ledger; print(ledger.__version__)"
 ```
 
-Expected: `0.1.1`.
+Expected: `0.2.0`.
 
 If that fails, the plugin directory is incomplete or is not on the path the way Hermes loads it. A
 tool call will show the reason:
@@ -123,27 +123,33 @@ A fresh install is completely inert: no records means `render_reinjection()` ret
 `on_pre_llm_call` returns `None`, and nothing is blocked. Confirm with `/assumptions` —
 `tracked: 0` means the plugin is working correctly and simply has nothing to report.
 
-## The plugin blocks a turn unexpectedly
+## The plugin warns or holds a turn unexpectedly
 
-The block message names the assumption and the decision. It is not a generic error:
+The message names the assumption and the decision. It is not a generic error:
 
 ```
-Assumption Ledger stopped this turn: a decision depends on an assumption that evidence has contradicted.
-- INVALIDATED: the file missing.txt exists (reason: path does not exist)
-  blocks decision: consume missing.txt
-Re-check the assumption or change the plan before continuing.
+Assumption Ledger warning: work recorded in this session depends on an assumption that evidence has contradicted.
+- INVALIDATED: the file missing.txt exists (id asm_4097c971c7d0)
+  relied on by: consume missing.txt
+This is a warning, not a stop. To clear it: /assumptions show <id>, /assumptions resolve <id> (re-check), or /assumptions drop <id> (retire).
 ```
 
-This is the plugin working as designed. Work out whether the contradiction is real:
+A warning is delivered as context and the turn proceeds. The turn is only *held* if it reaches the
+edited-code verify gate with the block still standing. Both are the plugin working as designed.
+
+Work out whether the contradiction is real:
 
 ```
 /assumptions show <the-assumption-id>
 ```
 
 Read the evidence trail. If the last verdict is `fail`, a deterministic check observed something
-that contradicts the assumption. The three legitimate responses are in
-[USER_GUIDE.md](USER_GUIDE.md#when-the-plugin-blocks-a-turn): fix reality, change the plan, or
-correct the assumption.
+that contradicts the assumption. The legitimate responses are in
+[USER_GUIDE.md](USER_GUIDE.md#when-the-plugin-warns-you): fix reality and re-check, retire the
+assumption, or change the plan.
+
+Note the session scope: a block recorded in one session does not warn another. If you expected a
+warning and saw none, confirm you are in the session that recorded the dependent decision.
 
 ### If the contradiction is stale or was a mistake
 
@@ -454,7 +460,7 @@ sqlite3 "<data dir>/ledger.db" "SELECT status, COUNT(*) FROM assumptions GROUP B
 sqlite3 "<data dir>/ledger.db" "SELECT verdict, detail FROM evidence ORDER BY created_at DESC LIMIT 20;"
 sqlite3 "<data dir>/ledger.db" "SELECT state, statement FROM decisions;"
 
-# Do the tests pass? (expect 73 passed)
+# Do the tests pass? (expect 246 passed)
 cd <path-to-plugin> && python -m pytest -q
 ```
 
@@ -477,7 +483,7 @@ If the diagnostics above do not explain the behaviour, gather this before report
 4. The `/assumptions` output.
 5. The `/assumptions show <id>` output for the record in question — this is the most useful item,
    because it contains the check spec, the resolved values, and the evidence trail.
-6. The plugin version (`0.1.1`) and the Hermes version.
+6. The plugin version (`0.2.0`) and the Hermes version.
 
 **Redact before posting.** The detail view can contain filesystem paths, and provenance can contain
 up to 500 characters of the sentence an assumption came from. Remove anything sensitive. Never

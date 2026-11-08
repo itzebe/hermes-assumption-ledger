@@ -22,6 +22,11 @@ def _ctx(tmp_path, **kw):
     return CheckContext(root=tmp_path, cwd=tmp_path, **kw)
 
 
+def _public_dns(hostname):
+    """A resolver stub that answers every name with a public address, so tests never touch DNS."""
+    return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+
 # --- filesystem -------------------------------------------------------------------------------
 def test_file_exists_pass_and_fail(tmp_path):
     (tmp_path / "a.txt").write_text("x")
@@ -108,60 +113,119 @@ def test_env_set(tmp_path):
 
 
 # --- command ----------------------------------------------------------------------------------
-def test_command_succeeds(tmp_path):
+def test_command_disabled_by_default(tmp_path):
+    """No allowlist means no execution at all, and the verdict is uncertainty, not failure."""
     ctx = _ctx(tmp_path)
+    r = run_check({"kind": "command_succeeds", "argv": ["true"]}, ctx)
+    assert r.verdict == ERROR
+    assert "disabled" in r.detail
+
+
+def test_command_allowlisted_runs(tmp_path):
+    ctx = _ctx(tmp_path, command_allowlist=("true", "false"))
     assert run_check({"kind": "command_succeeds", "argv": ["true"]}, ctx).verdict == PASS
     assert run_check({"kind": "command_succeeds", "argv": ["false"]}, ctx).verdict == FAIL
-    # A missing binary is uncertainty.
-    assert run_check({"kind": "command_succeeds", "argv": ["definitely-not-a-real-binary-xyz"]}, ctx).verdict == ERROR
+
+
+def test_command_not_on_allowlist_is_error(tmp_path):
+    """An unpermitted executable is a policy outcome (ERROR), never a contradiction."""
+    ctx = _ctx(tmp_path, command_allowlist=("true",))
+    r = run_check({"kind": "command_succeeds", "argv": ["rm", "-rf", "/"]}, ctx)
+    assert r.verdict == ERROR
+    assert "allowlist" in r.detail
+
+
+def test_command_path_is_not_basename_matched(tmp_path):
+    """A model-supplied path must not smuggle in an executable whose basename is allowed."""
+    ctx = _ctx(tmp_path, command_allowlist=("git",))
+    r = run_check({"kind": "command_succeeds", "argv": ["/tmp/evil/git", "status"]}, ctx)
+    assert r.verdict == ERROR
+
+
+def test_command_allowlist_is_not_widened_by_spec(tmp_path):
+    """A check spec cannot grant itself permission."""
+    ctx = _ctx(tmp_path, command_allowlist=("true",))
+    r = run_check(
+        {"kind": "command_succeeds", "argv": ["false"], "command_allowlist": ["false"]}, ctx
+    )
+    assert r.verdict == ERROR
+
+
+def test_command_missing_binary_is_error(tmp_path):
+    ctx = _ctx(tmp_path, command_allowlist=("definitely-not-a-real-binary-xyz",))
+    r = run_check({"kind": "command_succeeds", "argv": ["definitely-not-a-real-binary-xyz"]}, ctx)
+    assert r.verdict == ERROR
+
+
+def test_command_child_environment_is_minimal(tmp_path, monkeypatch):
+    """The child must not inherit the host environment."""
+    monkeypatch.setenv("LEDGER_SECRET_CANARY", "leaked")
+    script = tmp_path / "env.py"
+    script.write_text("import os, sys; sys.exit(0 if 'LEDGER_SECRET_CANARY' not in os.environ else 3)")
+    ctx = _ctx(tmp_path, command_allowlist=("python3",))
+    r = run_check(
+        {"kind": "command_succeeds", "argv": ["python3", str(script)]}, ctx
+    )
+    assert r.verdict == PASS, r.detail
+
+
+def test_command_shell_metacharacters_are_literal(tmp_path):
+    """argv is passed with shell=False, so a metacharacter is an argument, not a command."""
+    marker = tmp_path / "pwned.txt"
+    ctx = _ctx(tmp_path, command_allowlist=("true",))
+    r = run_check(
+        {"kind": "command_succeeds", "argv": ["true", ";", f"touch {marker}"]}, ctx
+    )
+    assert r.verdict == PASS
+    assert not marker.exists(), "shell interpolation must not occur"
 
 
 # --- http -------------------------------------------------------------------------------------
 def test_http_status_ok(tmp_path):
-    ctx = _ctx(tmp_path, http_get=lambda u, t: {"status": 200, "body": "ok"})
-    assert run_check({"kind": "http_status", "url": "http://x", "expected_status": 200}, ctx).verdict == PASS
-    assert run_check({"kind": "http_status", "url": "http://x", "expected_status": 204}, ctx).verdict == FAIL
+    ctx = _ctx(tmp_path, http_get=lambda u, t: {"status": 200, "body": "ok"}, url_resolver=_public_dns)
+    assert run_check({"kind": "http_status", "url": "https://example.com", "expected_status": 200}, ctx).verdict == PASS
+    assert run_check({"kind": "http_status", "url": "https://example.com", "expected_status": 204}, ctx).verdict == FAIL
 
 
 def test_http_5xx_is_error_not_fail(tmp_path):
-    ctx = _ctx(tmp_path, http_get=lambda u, t: {"status": 500, "body": ""})
-    assert run_check({"kind": "http_status", "url": "http://x"}, ctx).verdict == ERROR
+    ctx = _ctx(tmp_path, http_get=lambda u, t: {"status": 500, "body": ""}, url_resolver=_public_dns)
+    assert run_check({"kind": "http_status", "url": "https://example.com"}, ctx).verdict == ERROR
 
 
 def test_http_429_is_error(tmp_path):
-    ctx = _ctx(tmp_path, http_get=lambda u, t: {"status": 429, "body": ""})
-    assert run_check({"kind": "http_status", "url": "http://x"}, ctx).verdict == ERROR
+    ctx = _ctx(tmp_path, http_get=lambda u, t: {"status": 429, "body": ""}, url_resolver=_public_dns)
+    assert run_check({"kind": "http_status", "url": "https://example.com"}, ctx).verdict == ERROR
 
 
 def test_http_404_is_fail(tmp_path):
-    ctx = _ctx(tmp_path, http_get=lambda u, t: {"status": 404, "body": ""})
-    assert run_check({"kind": "http_status", "url": "http://x"}, ctx).verdict == FAIL
+    ctx = _ctx(tmp_path, http_get=lambda u, t: {"status": 404, "body": ""}, url_resolver=_public_dns)
+    assert run_check({"kind": "http_status", "url": "https://example.com"}, ctx).verdict == FAIL
 
 
 def test_http_transport_error_is_error(tmp_path):
-    ctx = _ctx(tmp_path, http_get=lambda u, t: {"error": "dns failure", "transient": True})
-    assert run_check({"kind": "http_status", "url": "http://x"}, ctx).verdict == ERROR
+    ctx = _ctx(tmp_path, http_get=lambda u, t: {"error": "dns failure", "transient": True}, url_resolver=_public_dns)
+    assert run_check({"kind": "http_status", "url": "https://example.com"}, ctx).verdict == ERROR
 
 
 def test_http_getter_raising_is_error(tmp_path):
     def boom(u, t):
         raise OSError("socket closed")
 
-    ctx = _ctx(tmp_path, http_get=boom)
-    assert run_check({"kind": "http_status", "url": "http://x"}, ctx).verdict == ERROR
+    ctx = _ctx(tmp_path, http_get=boom, url_resolver=_public_dns)
+    assert run_check({"kind": "http_status", "url": "https://example.com"}, ctx).verdict == ERROR
 
 
 def test_http_json_field(tmp_path):
     body = '{"version": "1.2.3", "nested": {"ok": true}, "list": [10, 20]}'
-    ctx = _ctx(tmp_path, http_get=lambda u, t: {"status": 200, "body": body})
-    assert run_check({"kind": "http_json_field", "url": "http://x", "pointer": "version", "equals": "1.2.3"}, ctx).verdict == PASS
-    assert run_check({"kind": "http_json_field", "url": "http://x", "pointer": "version", "equals": "9.9.9"}, ctx).verdict == FAIL
-    assert run_check({"kind": "http_json_field", "url": "http://x", "pointer": "nested.ok"}, ctx).verdict == PASS
-    assert run_check({"kind": "http_json_field", "url": "http://x", "pointer": "list.1", "equals": 20}, ctx).verdict == PASS
-    assert run_check({"kind": "http_json_field", "url": "http://x", "pointer": "missing"}, ctx).verdict == FAIL
+    ctx = _ctx(tmp_path, http_get=lambda u, t: {"status": 200, "body": body}, url_resolver=_public_dns)
+    assert run_check({"kind": "http_json_field", "url": "https://example.com", "pointer": "version", "equals": "1.2.3"}, ctx).verdict == PASS
+    assert run_check({"kind": "http_json_field", "url": "https://example.com", "pointer": "version", "equals": "9.9.9"}, ctx).verdict == FAIL
+    assert run_check({"kind": "http_json_field", "url": "https://example.com", "pointer": "nested.ok"}, ctx).verdict == PASS
+    assert run_check({"kind": "http_json_field", "url": "https://example.com", "pointer": "list.1", "equals": 20}, ctx).verdict == PASS
+    assert run_check({"kind": "http_json_field", "url": "https://example.com", "pointer": "missing"}, ctx).verdict == FAIL
     # Non-JSON body is uncertainty.
-    ctx2 = _ctx(tmp_path, http_get=lambda u, t: {"status": 200, "body": "<html>"})
-    assert run_check({"kind": "http_json_field", "url": "http://x", "pointer": "a"}, ctx2).verdict == ERROR
+    ctx2 = _ctx(tmp_path, http_get=lambda u, t: {"status": 200, "body": "<html>"}, url_resolver=_public_dns)
+    assert run_check({"kind": "http_json_field", "url": "https://example.com", "pointer": "a"}, ctx2).verdict == ERROR
 
 
 # --- database ---------------------------------------------------------------------------------
@@ -211,4 +275,4 @@ def test_verifier_registry_is_closed(tmp_path):
 
     assert "file_exists" in SUPPORTED_KINDS
     assert "db_row_count" in SUPPORTED_KINDS
-    assert len(SUPPORTED_KINDS) == 12
+    assert len(SUPPORTED_KINDS) == 12  # unchanged: hardening, not removal

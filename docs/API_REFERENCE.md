@@ -151,18 +151,22 @@ Fires once per turn before inference. Receives Hermes' standard kwargs (`session
 
 | Condition | Return | Hermes effect |
 | --- | --- | --- |
-| A decision depends on an `INVALIDATED` assumption | `{"action": "block", "message": str}` | Turn ends before inference. |
+| A decision *in this session* depends on an `INVALIDATED` assumption | `{"context": str}` | Injected into the **user message**. A warning, not a veto. |
 | No blocker, live assumptions exist | `{"context": str}` | Injected into the **user message**. |
 | No blocker, nothing live | `None` | Inert. |
 | Exception | `None` | Fails open. |
 
-Real block message:
+`pre_llm_call` never returns `{"action": "block"}`. Blocking before inference would stop the very
+turn the agent needs to investigate and clear the problem, and would stop it in every session. The
+single hard gate is `pre_verify`.
+
+Real warning message:
 
 ```
-Assumption Ledger stopped this turn: a decision depends on an assumption that evidence has contradicted.
-- INVALIDATED: the file missing.txt exists (reason: path does not exist)
-  blocks decision: consume missing.txt
-Re-check the assumption or change the plan before continuing.
+Assumption Ledger warning: work recorded in this session depends on an assumption that evidence has contradicted.
+- INVALIDATED: the file missing.txt exists (id asm_4097c971c7d0)
+  relied on by: consume missing.txt
+This is a warning, not a stop. To clear it: /assumptions show <id>, /assumptions resolve <id> (re-check), or /assumptions drop <id> (retire).
 ```
 
 Real context block:
@@ -173,8 +177,7 @@ Assumption Ledger — operational assumptions currently in effect:
   [UNVERIFIED] the file config/prod.json exists  (id asm_2199bf66ac95)
 ```
 
-When blockers exist the function returns `{"action": "block"}` and **not** the context block; the
-two are mutually exclusive.
+When a warning applies, it is prepended to the context block in the same `context` string.
 
 ### `post_llm_call`
 
@@ -186,12 +189,15 @@ natural-language patterns — and stores them. A falsy `assistant_response` is i
 
 ### `post_tool_call`
 
-Fires after every tool call. Reads `result` (dicts are JSON-encoded first) and `tool_name`; records
-`tool_call_id` and `session_id` into provenance.
+Fires after every tool call, and is a deliberate no-op.
 
-**Returns** `None` (observer). **Side effects**: extracts **explicit markers only** from the result
-text, capped at the first 20000 characters. Natural-language patterns are deliberately not applied
-to tool output — see [ARCHITECTURE.md](ARCHITECTURE.md#assumption-capture-flow).
+Tool output is untrusted text. A web page, a file or a terminal listing can contain the literal
+string `Assumption: ...`; persisting that would create a durable record re-injected into every
+later turn. The hook is registered so the manifest and the runtime agree and the policy is explicit.
+
+**Returns** `None` (observer). **Side effects**: none. Assumptions about a tool result belong in
+the assistant's own message, or in an explicit `assumption_record` call. See
+[ARCHITECTURE.md](ARCHITECTURE.md#assumption-capture-flow) and `tests/test_injection.py`.
 
 ### `pre_verify`
 
@@ -201,17 +207,20 @@ plugin reads none of them. It calls `sweep_stale()` first.
 
 | Condition | Return | Hermes effect |
 | --- | --- | --- |
-| A blocker exists | `{"action": "continue", "message": str}` | Turn is held. |
-| No blocker | `None` | Turn finishes normally. |
+| A decision *in this session* depends on an `INVALIDATED` assumption | `{"action": "continue", "message": str}` | Turn is held. |
+| No blocker in this session | `None` | Turn finishes normally. |
 | Exception | `None` | Fails open. |
 
-Hermes bounds how many times this can hold a turn, so the gate cannot loop forever.
+The gate is scoped to the session that recorded the dependent decision, so a contradiction in one
+session never holds another. The message names the assumptions and the commands that clear them
+(`/assumptions resolve`, `/assumptions drop`), so the turn is always escapable. Hermes bounds how
+many times this can hold a turn, so the gate cannot loop forever.
 
 ## Slash command
 
 ### `/assumptions`
 
-Registered via `register_command("assumptions", handler, description=..., args_hint="[status|list|check [id]|show <id>]")`.
+Registered via `register_command("assumptions", handler, description=..., args_hint="[status|list|check [id]|show <id>|resolve <id>|drop <id>|config]")`.
 The handler signature is `command_assumptions(raw_args: str = "", **kwargs) -> str`.
 
 | Invocation | Behaviour |
@@ -223,7 +232,10 @@ The handler signature is `command_assumptions(raw_args: str = "", **kwargs) -> s
 | `/assumptions check` | Verifies **all** assumptions, then prints the status view. |
 | `/assumptions check <id>` | Verifies one assumption, prints the result as indented JSON. |
 | `/assumptions show <id>` | Detail view for one assumption. |
-| anything else | `Usage: /assumptions [status|list|check [id]|show <id>]` |
+| `/assumptions resolve <id> [note]` | Re-check one assumption and report the outcome. Never forces a status. |
+| `/assumptions drop <id> [note]` | Retire an assumption without verification; unblocks its decisions. |
+| `/assumptions config` | Print the effective configuration. |
+| anything else | `Usage: /assumptions [status|list|check [id]|show <id>|resolve <id>|drop <id>|config]` |
 
 Real outputs:
 
@@ -241,7 +253,7 @@ $ /assumptions show asm_4097c971c7d0
 asm_4097c971c7d0  [VALID]
   statement: the file app.py exists
   check: {'kind': 'file_exists', 'path': '/tmp/ledger-work-fk4ngsxu/app.py'}
-  provenance: tool (extractor=tool)
+  provenance: assistant (extractor=marker)
   created: 2026-11-06 20:55:56
   checks: 1  fails: 0  seen: 2
   dependent decisions:
@@ -249,8 +261,14 @@ asm_4097c971c7d0  [VALID]
   evidence (newest first):
     - pass: path exists
 
+$ /assumptions resolve asm_4097c971c7d0
+Assumption Ledger: asm_4097c971c7d0 reverified (VALID -> VALID, verdict pass).
+
+$ /assumptions drop asm_4097c971c7d0
+Assumption Ledger: asm_4097c971c7d0 dropped (VALID -> DROPPED, retired without verification). Unblocked 1 decision(s).
+
 $ /assumptions bogus-subcommand-xyz
-Usage: /assumptions [status|list|check [id]|show <id>]
+Usage: /assumptions [status|list|check [id]|show <id>|resolve <id>|drop <id>|config]
 ```
 
 Note the argument parsing: a bare `check` verifies everything, but `check <id>` verifies one. The

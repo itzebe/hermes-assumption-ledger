@@ -1,11 +1,15 @@
 name: assumption-ledger
-version: 0.1.1
+version: 0.2.0
 requires_hermes: ">=0.23.0"
 description: >-
-  Persistent operational-assumption verification. Captures assumptions from observable agent
-  activity, preserves their provenance, verifies them with deterministic checks (files, git,
-  env, HTTP, SQLite), and blocks only the decisions that depend on a contradicted assumption.
+  Persistent operational-assumption ledger. Captures assumptions from the assistant's own
+  messages, preserves their provenance, verifies them with deterministic checks (files, git, env,
+  HTTP, SQLite), and warns when work recorded in a session depends on a contradicted assumption.
   Zero LLM calls; provider errors, timeouts and rate limits yield UNVERIFIED, never INVALIDATED.
+  Command execution is disabled by default and needs a user-configured allowlist; HTTP checks
+  refuse loopback, private, link-local and cloud-metadata destinations unless the user opts in.
+  Tool output is never stored as an assumption, and blocking is session-scoped and escapable with
+  /assumptions resolve or /assumptions drop.
 provides_hooks:
   - pre_llm_call
   - post_llm_call
@@ -16,20 +20,37 @@ provides_tools:
   - assumption_check
   - assumption_status
   - assumption_decide
+  - assumption_resolve
+  - assumption_drop
 config_schema:
   freshness_seconds:
     type: int
     default: 86400
     description: >-
       How long a successful check stays VALID before it degrades to STALE and needs re-checking.
-      A pass is never treated as permanently true.
+      A pass is never treated as permanently true. Bounded to 1..31536000.
   auto_check:
     type: bool
-    default: true
+    default: false
     description: >-
-      Re-verify VALID assumptions whose evidence has aged out when the plugin next runs a check.
+      Verify an assumption immediately when it is recorded or captured, instead of leaving it
+      UNVERIFIED until a check is requested. Off by default: it makes capture perform I/O.
   max_reinject:
     type: int
     default: 25
-    description: Maximum live assumptions re-injected into context on each turn.
+    description: >-
+      Maximum live assumptions re-injected into context on each turn. Bounded to 1..200.
+  command_allowlist:
+    type: list
+    default: []
+    description: >-
+      Executable names that the command_succeeds check may run, for example [git, node]. Empty
+      (the default) disables command checks entirely. Only the basename is matched, the child gets
+      a minimal environment, and a check spec can never add to this list.
+  allow_private_urls:
+    type: bool
+    default: false
+    description: >-
+      Permit http_status and http_json_field to reach loopback, private, link-local and CGNAT
+      destinations. Off by default. Cloud-metadata endpoints stay blocked even when this is true.
 requires_env: []

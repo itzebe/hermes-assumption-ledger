@@ -30,19 +30,23 @@ plugin needs no provider credentials and cannot be argued into a verdict.
 ## What it does
 
 1. **Capture.** Assumptions come from explicit markers (`ASSUMPTION:`, `ASSUME:`,
-   `PRECONDITION:`) in assistant messages and tool results, and from a small set of anchored
+   `PRECONDITION:`) in the assistant's own messages, and from a small set of anchored
    natural-language patterns ("the file X exists", "on branch B", "HEAD is at commit C",
    "https://… returns 200"). Each record keeps the sentence it came from, so extraction is
-   auditable rather than trusted. Tool results are scanned for explicit markers only — scanning raw
-   tool output for patterns would manufacture assumptions the agent never made.
+   auditable rather than trusted. **Tool output is never captured** — see "What is not captured"
+   below.
 2. **Verify.** Each assumption carries a deterministic check. Twelve check kinds are supported:
    `file_exists`, `file_contains`, `file_hash`, `git_branch`, `git_commit`, `git_clean`,
    `env_set`, `command_succeeds`, `http_status`, `http_json_field`, `db_table_exists`,
    `db_row_count`. Every check returns exactly one of `pass`, `fail` or `error`.
-3. **Track lifecycle.** Records move between `VALID`, `INVALIDATED`, `UNVERIFIED` and `STALE`.
-4. **Propagate.** A decision that depends on an invalidated assumption is marked `blocked`. A
-   pre-LLM gate stops the turn only when such a dependency exists, and a verify-gate holds
-   edited-code turns the same way. Unrelated work is never blocked.
+3. **Track lifecycle.** Records move between `VALID`, `INVALIDATED`, `UNVERIFIED`, `STALE` and
+   `DROPPED`.
+4. **Warn, then hold.** A decision that depends on an invalidated assumption is marked `blocked`,
+   scoped to the session that recorded it. `pre_llm_call` injects a warning but never vetoes the
+   turn — the agent needs that turn to investigate and clear the problem. The single hard gate is
+   `pre_verify`, which holds an edited-code turn only when a decision *in that session* depends on a
+   contradiction. Unrelated sessions are never affected, and the affected one always has a way out
+   (`/assumptions resolve` or `/assumptions drop`).
 5. **Survive.** Records live in SQLite under the plugin data directory, so they outlive a
    compaction, a restart, and `hermes plugins update`.
 
@@ -78,6 +82,7 @@ regression test.
 | `INVALIDATED` | Evidence definitively contradicts it. Dependent decisions are blocked. | **Yes** |
 | `UNVERIFIED` | No usable evidence yet. The safe default. | No |
 | `STALE` | Was valid; evidence aged out or could not be refreshed. Needs re-checking. | No |
+| `DROPPED` | A user retired it without verification. Excluded from the live set. | No |
 
 A pass is never assumed to hold forever: `freshness_seconds` (default 86400) bounds how long
 `VALID` lasts before degrading to `STALE`.
@@ -87,9 +92,14 @@ timeout or an unknown check kind leaves a contradiction standing, because "I cou
 is not the same as "it is no longer true". Only evidence that refutes the contradiction clears it
 and unblocks the decisions depending on it.
 
+`DROPPED` is deliberately not `VALID`. Retiring an assumption removes it from the live set and
+unblocks dependent decisions, but it writes no pass verdict — the ledger records that a *user*
+retired it, not that anything was verified.
+
 Two things surprise people. `UNVERIFIED` never blocks — a brand-new assumption is `UNVERIFIED`, and
 if that blocked work, recording anything would halt the agent. And a gate requires a **dependent
-decision**: an invalidated assumption nobody relies on blocks nothing.
+decision in the same session**: an invalidated assumption nobody relies on blocks nothing, and one
+relied on in session A does not touch session B.
 
 `git_clean` reports untracked files as observed evidence but does not treat them as a dirty tree
 by default, so a build artifact, a log or the ledger's own database cannot invalidate the
@@ -111,7 +121,7 @@ hermes plugins doctor .
 
 ```
 Plugin Doctor: .
-  manifest: assumption-ledger 0.1.1 (standalone)
+  manifest: assumption-ledger 0.2.0 (standalone)
   OK: runtime discovery, manifest parsing, import, and registration passed
   registrations: 4 tool(s), 4 hook(s)
 ```
@@ -129,13 +139,15 @@ Full instructions, including pinning a revision and removing the plugin, are in
 
 ## Surfaces
 
-**Tools** — `assumption_record`, `assumption_check`, `assumption_status`, `assumption_decide`.
+**Tools** — `assumption_record`, `assumption_check`, `assumption_status`, `assumption_decide`,
+`assumption_resolve`, `assumption_drop`.
 
-**Hooks** — `pre_llm_call` (re-inject live assumptions; block on a contradicted dependency),
-`post_llm_call` (capture), `post_tool_call` (capture explicit markers), `pre_verify` (hold a
-turn while a contradicted assumption is load-bearing).
+**Hooks** — `pre_llm_call` (re-inject live assumptions; warn, never veto, when a contradicted
+assumption is load-bearing), `post_llm_call` (capture from the assistant's message),
+`post_tool_call` (a deliberate no-op: tool output is never captured), `pre_verify` (the one hard
+gate: hold an edited-code turn whose session recorded a decision on a contradicted assumption).
 
-**Slash command** — `/assumptions [status|list|check [id]|show <id>]`.
+**Slash command** — `/assumptions [status|list|check [id]|show <id>|resolve <id>|drop <id>|config]`.
 
 Every argument, return shape and error case is in [docs/API_REFERENCE.md](docs/API_REFERENCE.md).
 
@@ -153,15 +165,21 @@ The agent then records a decision:
 ```
 
 If `config/prod.json` turns out not to exist, that assumption becomes `INVALIDATED`, the deploy
-decision is marked `blocked` with a reason naming it, and the next turn stops with an
-explanation:
+decision is marked `blocked` with a reason naming it, and the next turn carries a warning with the
+commands that clear it:
 
 ```
-Assumption Ledger stopped this turn: a decision depends on an assumption that evidence has contradicted.
-- INVALIDATED: the file config/prod.json exists (reason: path does not exist)
-  blocks decision: deploy the release
-Re-check the assumption or change the plan before continuing.
+Assumption Ledger warning: work recorded in this session depends on an assumption that evidence has contradicted.
+- INVALIDATED: the file config/prod.json exists (id asm_7f3c1a)
+  relied on by: deploy the release
+This is a warning, not a stop. To clear it: /assumptions show <id>, /assumptions resolve <id> (re-check), or /assumptions drop <id> (retire).
 ```
+
+The turn is not stopped, because the agent needs it to fix the problem. If the turn reaches the
+edited-code verify gate with the block still standing, `pre_verify` holds it there, with the same
+instructions. Creating `config/prod.json` and running `/assumptions resolve asm_7f3c1a` clears the
+contradiction and unblocks the deploy decision. Retiring it instead with
+`/assumptions drop asm_7f3c1a` also unblocks the decision, but records that nothing was verified.
 
 If instead the check merely timed out, the assumption stays `UNVERIFIED` and the turn proceeds.
 
@@ -186,20 +204,21 @@ what happens when the provider goes down mid-incident.
 
 ## Configuration
 
-There is nothing to configure for normal use. `plugin.yaml` declares three options:
+There is nothing to configure for normal use. `plugin.yaml` declares five options, and all five
+are read at runtime through the sanctioned `PluginContext.get_config` seam:
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `freshness_seconds` | int | 86400 | How long a pass stays `VALID` before it goes `STALE`. |
-| `auto_check` | bool | true | Re-verify aged-out assumptions on the next check run. |
-| `max_reinject` | int | 25 | Maximum live assumptions re-injected per turn. |
+| `freshness_seconds` | int | 86400 | How long a pass stays `VALID` before it goes `STALE`. Bounded to 1..31536000. |
+| `auto_check` | bool | false | Verify an assumption as soon as it is recorded, instead of leaving it `UNVERIFIED`. Off by default: it makes capture perform I/O. |
+| `max_reinject` | int | 25 | Maximum live assumptions re-injected per turn. Bounded to 1..200. |
+| `command_allowlist` | list | `[]` | Executable names `command_succeeds` may run, e.g. `[git, node]`. Empty disables command checks entirely. |
+| `allow_private_urls` | bool | false | Permit HTTP checks to reach loopback, private, link-local and CGNAT hosts. Cloud-metadata endpoints stay blocked regardless. |
 
-**These values are not currently read at runtime.** No code path reads them; the effective
-behaviour uses compiled-in constants that happen to equal the declared defaults. So the table above
-accurately describes what the plugin does, but setting these keys will pass validation and have no
-effect. This is a documented gap, not a silent one — see
-[docs/CONFIGURATION.md](docs/CONFIGURATION.md#declared-configuration-options-are-not-currently-read-at-runtime)
-for the evidence and for what to do instead.
+A malformed value falls back to the default rather than disabling the plugin, and a config-backend
+failure uses the safe defaults. `/assumptions config` prints the effective values.
+`tests/test_config.py` asserts that each setting has an observable effect, so a setting that stops
+being wired fails the suite instead of silently passing validation.
 
 ## Compatibility
 
@@ -210,37 +229,50 @@ for the evidence and for what to do instead.
 | Runtime dependencies | none |
 | Required credentials | none |
 | Registered hooks | `pre_llm_call`, `post_llm_call`, `post_tool_call`, `pre_verify` |
-| Registered tools | `assumption_record`, `assumption_check`, `assumption_status`, `assumption_decide` |
+| Registered tools | `assumption_record`, `assumption_check`, `assumption_status`, `assumption_decide`, `assumption_resolve`, `assumption_drop` |
 | Slash command | `/assumptions` |
 | Storage | SQLite (WAL) under `<hermes home>/plugin-data/assumption-ledger/` |
 
 The plugin passes the upstream validator with 15/15 checks and zero warnings, including the
 capability probe that imports the plugin in isolation, runs `register()`, and confirms the manifest
-matches what was registered.
+matches what was registered. `hermes plugins doctor` reports 6 tools and 4 hooks.
 
 ## Known limitations
 
 Documented in full across [docs/](docs/) and
 [CHANGELOG.md](CHANGELOG.md#known-issues). The ones most likely to matter:
 
-- **Declared configuration options are not read at runtime.** See above.
 - **`CheckContext.cwd` is unused.** Git and command checks resolve their directory from the check
   spec's `cwd` against `CheckContext.root`. The context's own `cwd` field is accepted, stored, and
   never read — a nonexistent `cwd` produces identical results.
-- **Version string inconsistency.** `__init__.py` declares `0.1.0`; `plugin.yaml`,
-  `pyproject.toml` and `ledger/__init__.py` declare `0.1.1`. The effective version is `0.1.1`.
-- **No tags or releases.** `v0.1.1` exists only in the manifest; the catalog pins a commit SHA.
+- **No tags or releases.** `v0.2.0` exists only in the manifest; the catalog pins a commit SHA.
 - **No CI.** There is no `.github/workflows/`; the suite is run locally.
 - **No unstated-assumption detection.** If the agent never states the belief, the plugin cannot
   capture it.
 - **`unsupported` checks never resolve.** A marker with no checkable form is stored and stays
   `UNVERIFIED` forever, so the stated belief is not lost.
 - **The gate raises cost; it does not enforce.** An agent that never calls `assumption_decide` is
-  never blocked.
-- **`db_row_count`'s `where` clause is interpolated into SQL** and must be treated as trusted
-  input. The `table` name is validated; the `where` clause is not.
-- **`command_succeeds` executes whatever `argv` you give it.** It is documented as a read-only
-  probe; nothing enforces that.
+  never held at the verify gate.
+- **The gate is per-session by design.** A block recorded in one session does not stop another.
+  That is the correct default — cross-session enforcement would let one stale session halt all
+  work — but it does mean a contradiction is not globally enforced.
+- **`command_succeeds` is off until you enable it.** Execution requires a non-empty
+  `command_allowlist`; the child gets a minimal environment; a check spec cannot widen the list.
+  The allowlist matches the executable's basename, so an allowed name found anywhere on `PATH`
+  runs. Keep the list short and trustworthy.
+- **HTTP checks follow redirects only after re-validating each hop.** A redirect to a blocked
+  destination is refused, not followed.
+
+## What is not captured
+
+**Tool output is never stored as an assumption.** A web page, a file or a terminal listing can
+contain the literal text `Assumption: ...`. Persisting that would write a durable record that is
+re-injected into every later turn, which hands outside content a permanent place in the model's
+context. `post_tool_call` is a deliberate no-op and `extract_from_tool_result` returns nothing.
+
+Assumptions about a tool result belong in the assistant's own message, or in an explicit
+`assumption_record` call. `tests/test_injection.py` covers this with planted markers in web pages,
+file listings and terminal output.
 
 ## Privacy
 
