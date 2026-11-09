@@ -263,7 +263,7 @@ Plugin Doctor: <path>
   registrations: 4 tool(s), 4 hook(s)
 ```
 
-**4 tools, 4 hooks** is the expected count. Fewer means something failed to register.
+**6 tools, 4 hooks** is the expected count. Fewer means something failed to register.
 
 Neither command is part of `pytest`; run them explicitly. `doctor` supports `--ci` to exit non-zero
 when validation reports an error, which is the right flag for a pipeline.

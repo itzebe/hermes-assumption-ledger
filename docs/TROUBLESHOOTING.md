@@ -439,7 +439,7 @@ hermes plugins list --enabled
 # Is the plugin structurally valid? (15 checks, expect all pass)
 hermes plugins validate <path-to-plugin>
 
-# Does it load and register? (expect 4 tools, 4 hooks)
+# Does it load and register? (expect 6 tools, 4 hooks)
 hermes plugins doctor <path-to-plugin>
 
 # What capabilities were declared vs granted?

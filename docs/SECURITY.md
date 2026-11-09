@@ -233,7 +233,7 @@ can run this plugin.
 | Run processes | `git` for git checks; the `argv` of a `command_succeeds` spec. |
 | Open databases | Read-only, on paths named in `db_*` specs. |
 | Open sockets | Only to URLs named in `http_*` specs. |
-| Register with Hermes | 4 hooks, 4 tools, 1 slash command. It does not register a context engine, a memory provider, an approval transport, a CLI command, or a platform action. |
+| Register with Hermes | 4 hooks, 6 tools, 1 slash command. It does not register a context engine, a memory provider, an approval transport, a CLI command, or a platform action. |
 
 **Verified** by the upstream validator: `declared tools: matches registrations`, `declared hooks:
 matches registrations`, `declared middleware: matches registrations`, `built-in tool collisions: no

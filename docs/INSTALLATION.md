@@ -158,7 +158,7 @@ Plugin Doctor: <path>
   registrations: 4 tool(s), 4 hook(s)
 ```
 
-**4 tools and 4 hooks** is the correct count. If you see fewer, something failed to register.
+**6 tools and 4 hooks** is the correct count. If you see fewer, something failed to register.
 
 ### 3. Confirm the tools are available
 

@@ -225,7 +225,7 @@ message or the pull request description.
 2. Keep the change focused. A bug fix and a refactor are two pull requests.
 3. Run the suite: `python -m pytest -q`. It must be **303 passed, 1 skipped** (plus whatever you add).
 4. Run the validator if you have Hermes: `hermes plugins validate .` — 15/15, zero warnings.
-5. If you changed the manifest, confirm `hermes plugins doctor .` still reports **4 tools, 4 hooks**
+5. If you changed the manifest, confirm `hermes plugins doctor .` still reports **6 tools, 4 hooks**
    (or the new correct count).
 6. Update the docs and `CHANGELOG.md` if behaviour changed.
 7. Open a pull request describing what changed and why. Include the test output.

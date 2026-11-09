@@ -113,7 +113,7 @@ Requires Hermes Agent `>=0.23.0` and Python `>=3.11`. **No third-party runtime d
 hermes plugins install itzebe/hermes-assumption-ledger --enable
 ```
 
-Then confirm it loaded. Expect **4 tools and 4 hooks**:
+Then confirm it loaded. Expect **6 tools and 4 hooks**:
 
 ```bash
 hermes plugins doctor .
