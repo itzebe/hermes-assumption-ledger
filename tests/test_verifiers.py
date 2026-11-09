@@ -140,6 +140,36 @@ def test_command_path_is_not_basename_matched(tmp_path):
     ctx = _ctx(tmp_path, command_allowlist=("git",))
     r = run_check({"kind": "command_succeeds", "argv": ["/tmp/evil/git", "status"]}, ctx)
     assert r.verdict == ERROR
+    assert "path" in r.detail or "bare" in r.detail
+
+
+def test_command_relative_path_is_refused(tmp_path):
+    ctx = _ctx(tmp_path, command_allowlist=("git",))
+    r = run_check({"kind": "command_succeeds", "argv": ["./scripts/git", "status"]}, ctx)
+    assert r.verdict == ERROR
+
+
+def test_command_runs_the_resolved_absolute_path(tmp_path, monkeypatch):
+    """The executed program is the resolver's absolute path, not the model string."""
+    seen = {}
+
+    def runner(argv, **kw):
+        seen["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    ctx = _ctx(tmp_path, command_allowlist=("true",), runner=runner)
+    r = run_check({"kind": "command_succeeds", "argv": ["true"]}, ctx)
+    assert r.verdict == PASS
+    assert seen["argv"][0] != "true"
+    assert seen["argv"][0].startswith("/")
+
+
+def test_command_unresolved_binary_is_error(tmp_path, monkeypatch):
+    """An allowlisted name that is not on the child PATH fails closed."""
+    monkeypatch.setenv("PATH", "/nonexistent-dir-xyz")
+    ctx = _ctx(tmp_path, command_allowlist=("git",))
+    r = run_check({"kind": "command_succeeds", "argv": ["git", "status"]}, ctx)
+    assert r.verdict == ERROR
 
 
 def test_command_allowlist_is_not_widened_by_spec(tmp_path):

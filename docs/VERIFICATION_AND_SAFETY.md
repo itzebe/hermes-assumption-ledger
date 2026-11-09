@@ -390,25 +390,26 @@ different numbers of tests.
 
 **Removing the `INVALIDATED` guard** — deleting the
 `if previous_status == INVALIDATED: return INVALIDATED` branch, so a failed re-check degrades a
-contradiction to `STALE` — makes **exactly one** test fail:
+contradiction to `STALE` — makes **two** tests fail:
 
 ```
 tests/test_frozen_oracles.py::test_transient_error_does_not_soften_a_contradiction
   AssertionError: a transient error must not soften a contradiction
   assert 'STALE' == 'INVALIDATED'
+tests/test_recovery.py::test_drop_is_not_resurrected_by_an_error_recheck
 
-1 failed, 72 passed
+2 failed, 301 passed
 ```
 
-**Mapping `error` to `INVALIDATED`** (the naive rule) fails five:
+**Mapping `error` to `INVALIDATED`** (the naive rule) fails fifteen:
 
 ```
-5 failed, 68 passed
+15 failed, 288 passed
 ```
 
 Two observations worth carrying forward:
 
-- **The protection is real but narrow.** One test guards the invariant against the outage case.
+- **The protection is real but narrow.** Two tests guard the invariant against the outage case.
   That is sufficient to detect a regression, but it means a reviewer changing the lifecycle rule
   must run the suite rather than reasoning about the change in isolation.
 - **`test_uncertainty_never_invalidates` does *not* catch the guard regression.** It starts from

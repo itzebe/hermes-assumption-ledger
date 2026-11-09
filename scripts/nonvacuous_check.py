@@ -38,15 +38,32 @@ REVERTS = [
         ["tests/test_command_policy.py", "tests/test_verifiers.py"],
     ),
     (
-        "R3 command: drop the basename check (any path runs)",
+        "R3 command: reduce argv[0] to its basename again",
         "ledger/command_policy.py",
-        '''    name = executable_name(argv)
-    if name is None:
-        return False, "no executable name"
-    if name not in allowlist:
-        return False, f"executable {name!r} is not on the command allowlist"
+        '''    name = first.strip()
+    if not name or "/" in name or "\\\\" in name:
+        return None
+    return name''',
+        '''    name = first.strip()
+    if "/" in name or "\\\\" in name:
+        name = PurePosixPath(PureWindowsPath(name).name).name
+    return name or None''',
+        ["tests/test_command_policy.py", "tests/test_verifiers.py"],
+    ),
+    (
+        "R3b command: execute the model-supplied argv[0] verbatim",
+        "ledger/command_policy.py",
+        '''    return [resolved, *list(argv)[1:]], "ok"''',
+        '''    return list(argv), "ok"  # REVERTED: run the model string''',
+        ["tests/test_command_policy.py", "tests/test_verifiers.py"],
+    ),
+    (
+        "R3c command: skip executable resolution (accept any allowlisted name)",
+        "ledger/command_policy.py",
+        '''    if resolve_executable(name) is None:
+        return False, f"executable {name!r} could not be resolved on PATH"
     return True, "ok"''',
-        '''    return True, "ok"  # REVERTED: no name check''',
+        '''    return True, "ok"  # REVERTED: no resolution''',
         ["tests/test_command_policy.py", "tests/test_verifiers.py"],
     ),
     (

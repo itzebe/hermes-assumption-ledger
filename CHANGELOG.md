@@ -7,7 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Version status
 
-**There are no git tags and no GitHub releases for this project.** `v0.2.0` exists only as a
+**There are no git tags and no GitHub releases for this project.** `v0.2.1` exists only as a
 version string in `plugin.yaml`, `pyproject.toml`, `__init__.py` and `ledger/__init__.py`. The
 catalog entry pins a commit SHA, which is the authoritative reference for the reviewed code.
 
@@ -16,10 +16,9 @@ SHA when you need an immutable reference.
 
 ### What the pinned commit does and does not contain
 
-The catalog entry currently pins `388cf029ccc5324c3f246423c8d461aa93d60090`, which is the commit the
-maintainer reviewed for `v0.1.1`. That commit is a documentation commit; it does not contain the
-hardening described under `[0.2.0]` below. The catalog entry is re-pinned to the new commit as part
-of the same change set.
+The catalog entry currently pins `650533a22434c330e6a0fa8f2ee7bb3147b5c029`, which is the commit the
+maintainer reviewed for `v0.2.0`. That commit does not contain the `argv[0]` path fix described under
+`[0.2.1]` below. The catalog entry is re-pinned to the new commit as part of the same change set.
 
 The consequence for a reviewer: **the pinned SHA in the catalog must match the SHA that contains
 the fixes you are reviewing.** If it does not, the catalog is stale.
@@ -27,8 +26,38 @@ the fixes you are reviewing.** If it does not, the catalog is stale.
 ### A note on version strings
 
 All four version strings (`plugin.yaml`, `pyproject.toml`, `__init__.py`, `ledger/__init__.py`) are
-`0.2.0` and agree. `tests/test_config.py::test_versions_agree_everywhere` fails if they diverge
+`0.2.1` and agree. `tests/test_config.py::test_versions_agree_everywhere` fails if they diverge
 again.
+
+## [0.2.1] — address the second maintainer security review
+
+Responds to the second `CHANGES_REQUESTED` review on catalog PR #150212, which reviewed `650533a2`.
+**This is a security fix; upgrade deliberately.**
+
+### Security
+
+- **`argv[0]` must be a bare executable name.** Previously `argv[0]` was reduced to its basename, so
+  a model-supplied path such as `/tmp/evil/git` or `./scripts/git` satisfied the `git` allowlist and
+  ran an attacker-controlled file. A path is now **refused** on either platform, the bare name must
+  be on the allowlist, the name is resolved with
+  `shutil.which(name, path=minimal_env()["PATH"])`, resolution failure fails closed, and the
+  **resolved absolute path** is executed instead of the model-supplied string.
+- **The allowlist is documented as a name filter, not a sandbox.** The README, `plugin.yaml`,
+  `docs/CONFIGURATION.md` and `docs/SECURITY.md` now state that the arguments are model-chosen, so
+  an allowed `node` still runs `node -e '<code>'` and an allowed `git` can still invoke an alias or
+  an external `core.editor`.
+
+### Fixed
+
+- **Re-injected blockers are session-scoped.** `render_reinjection` passed no session id to
+  `critical_blockers`, so a contradiction recorded in one session was announced in the re-injected
+  context of every other session. The `pre_llm_call` hook now passes the session id through, so the
+  blocker section is scoped exactly as the hard gate is.
+- **Relative imports.** The plugin entry point used top-level `from ledger import ...`, which only
+  worked because a test loader put the plugin directory on `sys.path`. Hermes does not; the entry
+  point now uses `from .ledger import ...`, and the tests load the module the way the real loader
+  does.
+- **Committed `.openhands/memory/` notes removed** and the directory added to `.gitignore`.
 
 ## [0.2.0] — address the maintainer security review
 
@@ -256,10 +285,13 @@ caps verify-gate nudges, so a determined agent can proceed.
 behaviour and was removed because it stopped the turn the agent needed to investigate, everywhere
 at once.
 
-### KI-14: A command allowlist matches the basename only
+### KI-14: The allowlist constrains the executable, not the arguments
 
-An allowed name (`git`) is resolved through `PATH`. An attacker who can write an executable named
-`git` earlier on the path could be run.
+A bare allowlisted name is resolved through `PATH`, so an attacker who can write an executable
+named `git` earlier on the path could still be run — keep `PATH` under your control. More
+importantly, the allowlist restricts *which* program runs, not what it does with the model-chosen
+arguments: an allowed `node` still runs `node -e '<code>'`, and an allowed `git` can still invoke a
+configured alias or an external `core.editor`.
 
-**Impact:** the allowlist reduces the capability, it does not eliminate it. Keep it short and keep
-`PATH` under your control.
+**Impact:** the allowlist reduces the capability, it does not eliminate it. It is a name filter,
+not a sandbox. Keep it short and keep `PATH` under your control.

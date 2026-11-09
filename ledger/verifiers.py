@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urljoin
 
-from .command_policy import is_allowed as _command_is_allowed, minimal_env as _minimal_env
+from .command_policy import allowed_argv as _command_allowed_argv, minimal_env as _minimal_env
 from .model import ERROR, FAIL, PASS, CheckResult
 from .url_safety import check_url as _check_url
 
@@ -259,14 +259,14 @@ def check_command_succeeds(spec: Dict[str, Any], ctx: CheckContext) -> CheckResu
     assumption is false.
     """
     argv = spec.get("argv")
-    allowed, reason = _command_is_allowed(argv, ctx.command_allowlist)
-    if not allowed:
+    resolved, reason = _command_allowed_argv(argv, ctx.command_allowlist)
+    if resolved is None:
         return _unknown(f"command not permitted: {reason}", argv=argv[0] if isinstance(argv, list) and argv else None)
     cwd = ctx.resolve(spec.get("cwd", "."))
     timeout = float(spec.get("timeout", ctx.default_timeout))
     try:
         proc = ctx.runner(
-            list(argv),
+            resolved,
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -275,11 +275,11 @@ def check_command_succeeds(spec: Dict[str, Any], ctx: CheckContext) -> CheckResu
             env=_minimal_env(),
         )
     except FileNotFoundError:
-        return _unknown("command not found", argv=argv[0])
+        return _unknown("command not found", argv=resolved[0])
     except subprocess.TimeoutExpired:
-        return _unknown("command timed out", argv=argv[0])
+        return _unknown("command timed out", argv=resolved[0])
     except OSError as exc:
-        return _unknown(f"command could not run: {exc}", argv=argv[0])
+        return _unknown(f"command could not run: {exc}", argv=resolved[0])
     if proc.returncode == 0:
         return _ok("command exited 0", returncode=0)
     return _bad("command exited non-zero", returncode=proc.returncode)

@@ -8,18 +8,28 @@ all**: the verifier is disabled unless the user has named an allowlist in plugin
 The policy, in full:
 
 * Disabled unless ``command_allowlist`` is non-empty.
-* Only an executable whose *basename* is on the allowlist may run. The basename is used because
-  the model chooses the path, and ``/usr/bin/git`` and ``/tmp/evil/git`` would otherwise be
-  indistinguishable. This is a name check, not a path check, and is documented as such.
+* ``argv[0]`` must be a **bare executable name** — a path is refused outright, on either
+  platform. Reducing a path to its basename would let ``/tmp/evil/git`` or ``./scripts/git``
+  run because ``git`` is allowlisted; a name check must not be bypassable by a path.
+* The bare name must appear in the allowlist, and is then resolved to an **absolute** path with
+  ``shutil.which(name, path=minimal_env()["PATH"])``. Resolution failure fails closed.
+* The **resolved absolute path** is executed, never the model-supplied string, so the program
+  that runs is the one the resolver found on the child's own ``PATH``.
 * Arguments are passed as a literal argv with ``shell=False``. No shell, no interpolation.
 * The child gets a minimal environment: ``PATH`` plus an empty ``HOME``/``TMPDIR``. The host
   environment is never inherited, so ``env_set``-style secrets are not visible to a child.
 * A model may not widen the allowlist. Only plugin config supplies it, and config is read from
   the Hermes settings subtree, not from a check spec.
+
+The allowlist constrains *which executable* may run, not what that executable will do with the
+arguments the model supplies. A permitted ``node`` can still run ``node -e '<code>'``, and a
+permitted ``git`` can still invoke a configured alias or an external ``core.editor``. Keep the
+list short and trustworthy.
 """
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -71,16 +81,33 @@ def normalize_allowlist(raw: Any) -> Tuple[str, ...]:
 
 
 def executable_name(argv: Any) -> Optional[str]:
-    """The basename of ``argv[0]``, or None when *argv* is not a usable argv."""
+    """The bare executable name in ``argv[0]``, or None when *argv* is not a usable argv.
+
+    A bare name only. ``argv[0]`` that contains a path separator (``/`` or ``\\``) is refused,
+    not reduced to its basename: ``/tmp/evil/git`` and ``./scripts/git`` must not be accepted
+    because ``git`` happens to be allowlisted.
+    """
     if not isinstance(argv, (list, tuple)) or not argv:
         return None
     first = argv[0]
-    if not isinstance(first, str) or not first.strip():
+    if not isinstance(first, str):
         return None
     name = first.strip()
-    if "/" in name or "\\" in name:
-        name = PurePosixPath(PureWindowsPath(name).name).name
-    return name or None
+    if not name or "/" in name or "\\" in name:
+        return None
+    return name
+
+
+def resolve_executable(name: str, path: Optional[str] = None) -> Optional[str]:
+    """Absolute path of allowlisted executable *name*, or None if it cannot be resolved.
+
+    Resolution uses the same ``PATH`` the child receives, so the executed program is the one
+    found on the child's environment rather than the model-supplied string.
+    """
+    if not name or "/" in name or "\\" in name:
+        return None
+    found = shutil.which(name, path=path or minimal_env()["PATH"])
+    return found or None
 
 
 def is_allowed(argv: Any, allowlist: Sequence[str]) -> Tuple[bool, str]:
@@ -99,10 +126,29 @@ def is_allowed(argv: Any, allowlist: Sequence[str]) -> Tuple[bool, str]:
         return False, "argv too long"
     name = executable_name(argv)
     if name is None:
-        return False, "no executable name"
+        return False, "argv[0] must be a bare executable name, not a path"
     if name not in allowlist:
         return False, f"executable {name!r} is not on the command allowlist"
+    if resolve_executable(name) is None:
+        return False, f"executable {name!r} could not be resolved on PATH"
     return True, "ok"
+
+
+def allowed_argv(argv: Any, allowlist: Sequence[str]) -> Tuple[Optional[List[str]], str]:
+    """Validate *argv* and return it with ``argv[0]`` replaced by its resolved absolute path.
+
+    Returns ``(resolved_argv, reason)``. ``resolved_argv`` is None when the command is refused;
+    otherwise it is the argv to execute, with the first element an absolute path produced by
+    :func:`resolve_executable`. The model-supplied ``argv[0]`` is never executed directly.
+    """
+    allowed, reason = is_allowed(argv, allowlist)
+    if not allowed:
+        return None, reason
+    name = executable_name(argv)
+    resolved = resolve_executable(name) if name else None
+    if resolved is None:
+        return None, "executable could not be resolved on PATH"
+    return [resolved, *list(argv)[1:]], "ok"
 
 
 def minimal_env(path: Optional[str] = None) -> Dict[str, str]:

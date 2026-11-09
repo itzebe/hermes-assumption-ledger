@@ -406,8 +406,16 @@ class LedgerEngine:
         """
         return [a for a in self.store.list_assumptions() if a.status in LIVE_STATUSES]
 
-    def render_reinjection(self, limit: Optional[int] = None) -> str:
-        """Compact block re-injected into the model context to keep assumptions in view."""
+    def render_reinjection(self, limit: Optional[int] = None,
+                           session_id: Optional[str] = None) -> str:
+        """Compact block re-injected into the model context to keep assumptions in view.
+
+        ``session_id`` scopes the blocker section, exactly as it scopes
+        :meth:`critical_blockers`. Without it, a contradiction recorded in one session would be
+        announced in the re-injected context of every other session, which is the cross-session
+        leak the session scope exists to prevent. The live-assumption list is not session-scoped:
+        an assumption in effect is in effect everywhere.
+        """
         limit = self.reinject_limit if limit is None else limit
         live = self.live_assumptions()
         if not live:
@@ -415,7 +423,7 @@ class LedgerEngine:
         lines = ["Assumption Ledger — operational assumptions currently in effect:"]
         for a in live[:limit]:
             lines.append(f"  [{a.status}] {a.statement}  (id {a.id})")
-        broken = self.critical_blockers()
+        broken = self.critical_blockers(session_id=session_id)
         if broken:
             lines.append("Invalidated assumptions blocking planned work:")
             for b in broken[:limit]:

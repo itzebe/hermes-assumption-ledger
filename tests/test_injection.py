@@ -144,8 +144,11 @@ def test_plugin_hook_does_not_persist_tool_markers(tmp_path, monkeypatch):
 
     root = Path(__file__).resolve().parents[1]
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    spec = importlib.util.spec_from_file_location("alp_inject", root / "__init__.py")
+    spec = importlib.util.spec_from_file_location(
+        "alp_inject", root / "__init__.py", submodule_search_locations=[str(root)]
+    )
     mod = importlib.util.module_from_spec(spec)
+    sys.modules["alp_inject"] = mod
     spec.loader.exec_module(mod)
     mod._HOST = mod.LedgerHost()
 

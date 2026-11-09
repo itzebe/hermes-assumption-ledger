@@ -1,5 +1,5 @@
 name: assumption-ledger
-version: 0.2.0
+version: 0.2.1
 requires_hermes: ">=0.23.0"
 description: >-
   Persistent operational-assumption ledger. Captures assumptions from the assistant's own
@@ -45,8 +45,11 @@ config_schema:
     default: []
     description: >-
       Executable names that the command_succeeds check may run, for example [git, node]. Empty
-      (the default) disables command checks entirely. Only the basename is matched, the child gets
-      a minimal environment, and a check spec can never add to this list.
+      (the default) disables command checks entirely. Only a bare executable name is accepted — a
+      path is refused — and the name is resolved to an absolute path on the child's PATH. The child
+      gets a minimal environment, and a check spec can never add to this list. The list restricts
+      which program may run, not the safety of the arguments the model passes it: an allowed node
+      can still run `node -e`, and an allowed git can still invoke an alias.
   allow_private_urls:
     type: bool
     default: false

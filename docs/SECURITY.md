@@ -281,7 +281,12 @@ command_allowlist: [git, node]
 
 When enabled, the policy is:
 
-- the executable's **basename** must appear in the allowlist (`git`, not `/usr/bin/git`);
+- `argv[0]` must be a **bare executable name**. A path — `/tmp/evil/git`, `./scripts/git`,
+  `C:\evil\git` — is **refused**, not reduced to its basename, so a path cannot be smuggled past
+  the name check;
+- the bare name must appear in the allowlist, and is resolved to an **absolute path** with
+  `shutil.which(name, path=minimal_env()["PATH"])`; resolution failure fails closed;
+- the **resolved absolute path** is executed, never the model-supplied string;
 - a check spec **cannot** widen the allowlist — the permitted set is read from plugin config only;
 - the process is started with `subprocess.run(argv, shell=False)`, so shell metacharacters are
   arguments, not syntax;
@@ -289,9 +294,11 @@ When enabled, the policy is:
   `LANG=C`), so a probe cannot read the host's credentials;
 - a missing binary, a policy refusal or a timeout is an `error`, never a `fail`.
 
-An allowed *name* is still resolved through `PATH`, so an attacker who can write an executable
-named `git` earlier on the path could be run. Keep the allowlist short and trustworthy, and keep
-`PATH` under your control.
+The allowlist constrains **which executable** runs, not what it does with the model-chosen
+arguments. A permitted `node` runs `node -e '<arbitrary code>'`; a permitted `git` can trigger a
+configured alias or an external `core.editor`/`core.pager`; permitting a shell or an interpreter is
+equivalent to permitting arbitrary execution. Keep the list short, prefer programs whose useful
+behaviour is read-only, and treat each entry as trusting that program to be driven by a model.
 
 ### HTTP checks and SSRF
 

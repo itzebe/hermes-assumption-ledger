@@ -23,12 +23,31 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
+def load_plugin_module(name: str):
+    """Load ``ROOT/__init__.py`` the way the Hermes plugin loader does.
+
+    Hermes publishes the module in ``sys.modules`` with its own directory as the submodule
+    search location, so the plugin's relative imports (``from .ledger import ...``) resolve.
+    Loading it as a bare file spec instead would leave ``.ledger`` unimportable and would not
+    exercise the real import path.
+    """
+    spec = importlib.util.spec_from_file_location(
+        name, ROOT / "__init__.py", submodule_search_locations=[str(ROOT)]
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return mod
+
+
 @pytest.fixture()
 def plugin(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    spec = importlib.util.spec_from_file_location("assumption_ledger_plugin", ROOT / "__init__.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = load_plugin_module("assumption_ledger_plugin")
     # Reset the module-level host so each test gets its own data directory.
     mod._HOST = mod.LedgerHost()
     return mod
@@ -140,6 +159,31 @@ def test_pre_llm_warns_but_never_blocks(plugin, tmp_path):
     assert warned and "context" in warned
     assert "action" not in warned, "pre_llm_call must not block"
     assert "INVALIDATED" in warned["context"]
+
+
+def test_pre_llm_reinjection_is_session_scoped(plugin, tmp_path):
+    """A blocker from one session must not appear in another session's injected context."""
+    ctx = RecordingContext()
+    plugin.register(ctx)
+    (tmp_path / "alivehook.txt").write_text("x")
+    json.loads(ctx.tools["assumption_record"]["handler"](
+        {"statement": "the file alivehook.txt exists",
+         "check": {"kind": "file_exists", "path": str(tmp_path / "alivehook.txt")}}
+    ))
+    rec = json.loads(ctx.tools["assumption_record"]["handler"](
+        {"statement": "the file scopedhook.txt exists",
+         "check": {"kind": "file_exists", "path": str(tmp_path / "scopedhook.txt")}}
+    ))
+    json.loads(ctx.tools["assumption_check"]["handler"]({"id": rec["id"]}))  # INVALIDATED
+    json.loads(ctx.tools["assumption_decide"]["handler"](
+        {"statement": "consume scopedhook.txt", "depends_on": [rec["id"]]}, session_id="s1"
+    ))
+
+    other = plugin.on_pre_llm_call(session_id="other")
+    assert other is not None, "a live assumption is re-injected everywhere"
+    assert "Invalidated assumptions blocking planned work" not in other["context"]
+    mine = plugin.on_pre_llm_call(session_id="s1")
+    assert mine and "Invalidated assumptions blocking planned work" in mine["context"]
 
 
 def test_pre_verify_holds_only_the_affected_session(plugin, tmp_path):
