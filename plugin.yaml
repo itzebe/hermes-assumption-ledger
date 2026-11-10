@@ -1,5 +1,5 @@
 name: assumption-ledger
-version: 0.2.1
+version: 0.2.2
 requires_hermes: ">=0.23.0"
 description: >-
   Persistent operational-assumption ledger. Captures assumptions from the assistant's own

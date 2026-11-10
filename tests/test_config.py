@@ -273,7 +273,7 @@ def test_versions_agree_everywhere():
         "ledger/__init__.py": re.search(r'^__version__\s*=\s*"([^"]+)"', pkg, re.MULTILINE).group(1),
     }
     assert len(set(versions.values())) == 1, f"version strings disagree: {versions}"
-    assert versions["plugin.yaml"] == "0.2.1"
+    assert versions["plugin.yaml"] == "0.2.2"
 
 
 def test_manifest_tools_and_hooks_match_registration(plugin):

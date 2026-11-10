@@ -163,6 +163,13 @@ was committed. Counting it would invalidate 'the tree is clean' for reasons unre
 assumption." Untracked files are always returned in `observed.untracked` so they are visible in
 the evidence, but they only affect the verdict when the spec sets `include_untracked: true`.
 
+**The git checks cannot be steered into running a program.** Each `git` invocation is started with
+`-c core.fsmonitor=false -c core.hooksPath=/dev/null` and the minimal environment, and `git status`
+adds `--no-optional-locks`. A repository the agent merely checked out cannot therefore use its own
+configuration to have git execute a `core.fsmonitor` program or a hooks-directory program during a
+verification, and no host environment variable reaches git. See
+[SECURITY.md](SECURITY.md#git-checks-and-repository-controlled-execution).
+
 **`env_set` never echoes the value.** When a variable differs from `equals`, the detail is
 `"environment variable differs from expected"` with only the variable name in `observed`. The
 value is not recorded, because it may be a secret.
@@ -398,13 +405,13 @@ tests/test_frozen_oracles.py::test_transient_error_does_not_soften_a_contradicti
   assert 'STALE' == 'INVALIDATED'
 tests/test_recovery.py::test_drop_is_not_resurrected_by_an_error_recheck
 
-2 failed, 301 passed
+2 failed, 305 passed
 ```
 
-**Mapping `error` to `INVALIDATED`** (the naive rule) fails fifteen:
+**Mapping `error` to `INVALIDATED`** (the naive rule) fails fourteen:
 
 ```
-15 failed, 288 passed
+14 failed, 293 passed
 ```
 
 Two observations worth carrying forward:

@@ -198,6 +198,23 @@ REVERTS = [
         return True, "ok"  # REVERTED: diverge from core''',
         ["tests/test_core_parity.py"],
     ),
+    (
+        "R17 git: drop the config overrides (repository can run core.fsmonitor)",
+        "ledger/verifiers.py",
+        '''_GIT_CONFIG_OVERRIDES = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null")''',
+        '''_GIT_CONFIG_OVERRIDES = ()  # REVERTED: no fsmonitor/hooks override''',
+        ["tests/test_verifiers.py"],
+    ),
+    (
+        "R18 git: run the child with the inherited host environment",
+        "ledger/verifiers.py",
+        '''            timeout=timeout,
+            env=_minimal_env(),
+        )''',
+        '''            timeout=timeout,
+        )  # REVERTED: host environment inherited''',
+        ["tests/test_verifiers.py"],
+    ),
 ]
 
 

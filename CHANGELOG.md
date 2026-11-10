@@ -7,7 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Version status
 
-**There are no git tags and no GitHub releases for this project.** `v0.2.1` exists only as a
+**There are no git tags and no GitHub releases for this project.** `v0.2.2` exists only as a
 version string in `plugin.yaml`, `pyproject.toml`, `__init__.py` and `ledger/__init__.py`. The
 catalog entry pins a commit SHA, which is the authoritative reference for the reviewed code.
 
@@ -16,9 +16,9 @@ SHA when you need an immutable reference.
 
 ### What the pinned commit does and does not contain
 
-The catalog entry currently pins `650533a22434c330e6a0fa8f2ee7bb3147b5c029`, which is the commit the
-maintainer reviewed for `v0.2.0`. That commit does not contain the `argv[0]` path fix described under
-`[0.2.1]` below. The catalog entry is re-pinned to the new commit as part of the same change set.
+The catalog entry currently pins `87a2827ca18830755959e6a881b0ff0dd965daad`, which is the commit the
+maintainer reviewed for `v0.2.1`. That commit does not contain the git-hardening fix described under
+`[0.2.2]` below. The catalog entry is re-pinned to the new commit as part of the same change set.
 
 The consequence for a reviewer: **the pinned SHA in the catalog must match the SHA that contains
 the fixes you are reviewing.** If it does not, the catalog is stale.
@@ -26,8 +26,33 @@ the fixes you are reviewing.** If it does not, the catalog is stale.
 ### A note on version strings
 
 All four version strings (`plugin.yaml`, `pyproject.toml`, `__init__.py`, `ledger/__init__.py`) are
-`0.2.1` and agree. `tests/test_config.py::test_versions_agree_everywhere` fails if they diverge
+`0.2.2` and agree. `tests/test_config.py::test_versions_agree_everywhere` fails if they diverge
 again.
+
+## [0.2.2] — harden the git checks against repository-controlled execution
+
+Responds to the third `CHANGES_REQUESTED` review on catalog PR #150212, which reviewed `87a2827c`.
+**This is a security fix; upgrade deliberately.**
+
+### Security
+
+- **The git checks no longer let a repository choose a program to run.** ``core.fsmonitor`` is git
+  configuration that names an executable git launches while computing ``status``, and
+  ``core.hooksPath`` can redirect hook lookup at an attacker-chosen directory. A repository the
+  agent merely checked out could therefore execute code during what is meant to be a read-only
+  verification. ``_run_git`` now prepends ``-c core.fsmonitor=false -c core.hooksPath=/dev/null`` to
+  every git invocation; a command-line ``-c`` takes precedence over repository, worktree and global
+  configuration. ``git status`` also passes ``--no-optional-locks``.
+- **The git child no longer inherits the host environment.** ``_run_git`` passes
+  ``env=minimal_env()`` (the same minimal environment ``command_succeeds`` uses), so host variables
+  — API tokens, cloud credentials — are not visible to git or to any program git spawns.
+
+### Tests
+
+- New regression tests prove both protections and would fail without them: a repository configured
+  with an observable ``core.fsmonitor`` program, and a host-variable canary the git child must not
+  see. ``scripts/nonvacuous_check.py`` gains reverts ``R17`` and ``R18`` that remove each protection
+  and confirm the tests fail.
 
 ## [0.2.1] — address the second maintainer security review
 

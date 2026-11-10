@@ -17,7 +17,7 @@ from .url_safety import check_url
 from .store import LedgerStore
 from .verifiers import CheckContext, SUPPORTED_KINDS, run_check
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     "LedgerEngine", "LedgerStore", "CheckContext", "run_check", "SUPPORTED_KINDS",

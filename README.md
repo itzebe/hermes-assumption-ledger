@@ -105,6 +105,12 @@ relied on in session A does not touch session B.
 by default, so a build artifact, a log or the ledger's own database cannot invalidate the
 assumption. Pass `include_untracked: true` when untracked files genuinely matter.
 
+The git checks never let a repository choose a program to run. Every `git` invocation is started
+with `-c core.fsmonitor=false -c core.hooksPath=/dev/null` (a command-line `-c` beats the
+repository's own configuration) and the minimal environment, and `git status` adds
+`--no-optional-locks`, so a checked-out repository cannot execute code through `core.fsmonitor` or a
+hooks directory, and the host environment is not visible to git or to anything it spawns.
+
 ## Install
 
 Requires Hermes Agent `>=0.23.0` and Python `>=3.11`. **No third-party runtime dependencies.**
@@ -316,14 +322,14 @@ issues.
 python -m pytest
 ```
 
-**303 tests** across eleven files, with no network access and no xfails. The suite is
+**307 tests** across eleven files, with no network access and no xfails. The suite is
 deterministic across runs. One test — the live-core comparison in `test_core_parity.py` — is
 skipped on a bare checkout and runs only inside a Hermes checkout.
 
 | File | Tests | Focus |
 | --- | --- | --- |
 | `tests/test_frozen_oracles.py` | 17 | The adversarial expectation table. The contract. |
-| `tests/test_verifiers.py` | 30 | Each of the 12 check kinds, plus failure modes. |
+| `tests/test_verifiers.py` | 34 | Each of the 12 check kinds, plus failure modes. |
 | `tests/test_engine.py` | 14 | Capture, verification, propagation, freshness, reporting. |
 | `tests/test_plugin_integration.py` | 12 | Hooks, tools, slash command, manifest consistency. |
 | `tests/test_extractor.py` | 12 | Extraction precision — including what must *not* be extracted. |
@@ -345,8 +351,8 @@ different ways of breaking the rule, with measured results:
 
 | Break the rule by | Result |
 | --- | --- |
-| Removing the `INVALIDATED` guard, so a failed re-check degrades a contradiction to `STALE` | **2 failed, 301 passed** — `test_transient_error_does_not_soften_a_contradiction`, `test_drop_is_not_resurrected_by_an_error_recheck` |
-| Mapping `error` to `INVALIDATED` (the naive rule) | **15 failed, 288 passed** — the four `UNVERIFIED` oracles, `test_uncertainty_never_invalidates`, and the `test_error_paths_never_invalidate` matrix |
+| Removing the `INVALIDATED` guard, so a failed re-check degrades a contradiction to `STALE` | **2 failed, 305 passed** — `test_transient_error_does_not_soften_a_contradiction`, `test_drop_is_not_resurrected_by_an_error_recheck` |
+| Mapping `error` to `INVALIDATED` (the naive rule) | **14 failed, 293 passed** — the four `UNVERIFIED` oracles, `test_uncertainty_never_invalidates`, and the six `test_error_paths_never_invalidate` cases |
 
 The first row is the more important one. `test_transient_error_does_not_soften_a_contradiction` is
 the only test that catches a contradiction being softened by an outage, which is why the guard in

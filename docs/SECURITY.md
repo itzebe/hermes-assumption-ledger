@@ -300,6 +300,27 @@ configured alias or an external `core.editor`/`core.pager`; permitting a shell o
 equivalent to permitting arbitrary execution. Keep the list short, prefer programs whose useful
 behaviour is read-only, and treat each entry as trusting that program to be driven by a model.
 
+### Git checks and repository-controlled execution
+
+`git_branch`, `git_commit` and `git_clean` run `git` in the directory named by the check. A
+repository's **own** configuration can name programs for git to run — `core.fsmonitor` names an
+executable git launches while computing `status`, and `core.hooksPath` can point hook lookup at an
+attacker-chosen directory. A repository the agent merely checked out could therefore execute code
+during what is meant to be a read-only verification, without any allowlist being configured. To
+close that:
+
+- every git invocation is started with `-c core.fsmonitor=false -c core.hooksPath=/dev/null`
+  prepended to the argument vector; a command-line `-c` takes precedence over repository, worktree
+  and global configuration;
+- `git status` also passes `--no-optional-locks`, so a read-only status check does not take the
+  optional index lock;
+- the git child is started with the **minimal environment** (`env=minimal_env()`), so the host
+  environment — API tokens, cloud credentials — is not visible to git or to any program git spawns;
+- the existing timeout, error handling and output limits are unchanged, and no shell is used.
+
+This raises the bar rather than removing the class: git still runs in the repository's directory,
+and a check may still name any path the process can read.
+
 ### HTTP checks and SSRF
 
 Every URL in `http_status` or `http_json_field` is screened before the request, and every redirect

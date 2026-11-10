@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 _HOOKS = ("pre_llm_call", "post_llm_call", "pre_verify")
 _TOOLSET = "assumption_ledger"

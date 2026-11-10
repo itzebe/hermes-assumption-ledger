@@ -20,19 +20,19 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-Expected: **303 passed, 1 skipped**, in a few seconds. (The skip is the live-core comparison in
+Expected: **307 passed, 1 skipped**, in a few seconds. (The skip is the live-core comparison in
 `test_core_parity.py`; it runs only inside a Hermes checkout.)
 
 ```
 ........................................................................ [ 23%]
-........................................................................ [ 47%]
-........................................................................ [ 71%]
-........................................................................ [ 94%]
-................                                                         [100%]
-303 passed, 1 skipped in 2.31s
+........................................................................ [ 46%]
+........................................................................ [ 70%]
+........................................................................ [ 93%]
+....................                                                     [100%]
+307 passed, 1 skipped in 2.30s
 ```
 
-The suite is deterministic. Consecutive runs produce the same 303 passes, with no order-dependence,
+The suite is deterministic. Consecutive runs produce the same 307 passes, with no order-dependence,
 no skips, no xfails, and no network access. HTTP checks are exercised through injected transports
 and resolver stubs, so nothing leaves the machine.
 
@@ -41,7 +41,7 @@ and resolver stubs, so nothing leaves the machine.
 | File | Tests | Lines | Focus |
 | --- | --- | --- | --- |
 | `tests/test_frozen_oracles.py` | 17 | 331 | The adversarial scenario table. The contract. |
-| `tests/test_verifiers.py` | 30 | 308 | Each of the 12 check kinds, plus failure modes. |
+| `tests/test_verifiers.py` | 34 | 430 | Each of the 12 check kinds, plus failure modes and git hardening. |
 | `tests/test_engine.py` | 14 | 194 | Capture, verification, propagation, freshness, reporting. |
 | `tests/test_extractor.py` | 12 | 105 | Extraction precision — including what must *not* be extracted. |
 | `tests/test_plugin_integration.py` | 12 | 251 | The Hermes adapter: hooks, tools, slash command, manifest. |
@@ -51,7 +51,7 @@ and resolver stubs, so nothing leaves the machine.
 | `tests/test_config.py` | 33 | 287 | Every declared setting has an observable effect. |
 | `tests/test_command_policy.py` | 41 | 204 | Allowlist parsing, path refusal, resolution, minimal environment. |
 | `tests/test_core_parity.py` | 39 | 106 | SSRF verdicts match Hermes core's `is_safe_url`. |
-| **Total** | **303 (+1 skip)** | **2681** | |
+| **Total** | **307 (+1 skip)** | **2803** | |
 
 The split is deliberate. `test_frozen_oracles.py` encodes *what the product promises*; the other
 files test the machinery that delivers it, with the four security-focused files covering the
@@ -66,7 +66,7 @@ one hardening change at a time, runs the focused suites, and restores the file:
 python3 scripts/nonvacuous_check.py
 ```
 
-Every one of the 18 reverts must be caught. If any revert leaves the suite green, that test is
+Every one of the 20 reverts must be caught. If any revert leaves the suite green, that test is
 reported as `VACUOUS!` and the script exits non-zero.
 
 ## Running the tests
@@ -324,21 +324,24 @@ tests/test_frozen_oracles.py::test_transient_error_does_not_soften_a_contradicti
   assert 'STALE' == 'INVALIDATED'
 tests/test_recovery.py::test_drop_is_not_resurrected_by_an_error_recheck
 
-2 failed, 301 passed
+2 failed, 305 passed
 ```
 
 **Break 2 — make `error` map to `INVALIDATED`** (the naive rule, where any failed check is treated
 as a refutation):
 
 ```
-15 failed, 288 passed
+14 failed, 293 passed
 
+FAILED tests/test_config.py::test_command_allowlist_enables_command_checks
+FAILED tests/test_config.py::test_allow_private_urls_changes_http_policy
+FAILED tests/test_config.py::test_allow_private_urls_does_not_unblock_metadata
 FAILED tests/test_engine.py::test_uncertainty_never_invalidates
 FAILED tests/test_frozen_oracles.py::test_O3_missing_evidence_is_unverified
 FAILED tests/test_frozen_oracles.py::test_O4_provider_timeout_is_unverified
 FAILED tests/test_frozen_oracles.py::test_O5_rate_limited_provider_is_unverified
 FAILED tests/test_frozen_oracles.py::test_O5b_server_error_is_unverified
-... plus the six test_error_paths_never_invalidate cases and others
+... plus the six test_error_paths_never_invalidate cases
 ```
 
 Three lessons:
