@@ -36,13 +36,13 @@ There are two, and they are **not** equivalent.
 | --- | --- | --- |
 | Status | **Available now** | Available, but a custom source |
 | Identifier | `assumption-ledger` | `itzebe/hermes-assumption-ledger` |
-| Installs | The reviewed pinned SHA from the catalog (`07bfaaa…`, v0.2.2) | The repository's **default branch** (`main`, still v0.2.0) |
+| Installs | The reviewed commit the catalog selects (v0.2.2; exact SHA in the catalog YAML) | The repository's **default branch** (`main`, currently v0.2.2) |
 | Review | Catalog review plus a pinned SHA | None beyond the upstream validator; the install-time scan may refuse it |
 | Recommended | **Yes** | Only for inspecting or pinning an unreleased revision |
 
 **Use Method 1.** The bare name `assumption-ledger` resolves through the official catalog, which
-carries the reviewed code and the security fixes. The `owner/repo` form clones the default branch
-(which is still the older `v0.2.0`) and Hermes flags it as an **unreviewed custom source** — its
+carries the reviewed code and the security fixes. The `owner/repo` form clones the mutable default
+branch (`main`, currently `v0.2.2`) and Hermes flags it as an **unreviewed custom source** — its
 install-time scan may block it with `Decision: BLOCKED`.
 
 ## Method 1: install from the official catalog
@@ -103,13 +103,14 @@ Then install from the local checkout by path, or install by identifier as above.
 hermes plugins install itzebe/hermes-assumption-ledger --ref <40-character-commit-sha>
 ```
 
-`--ref` takes exactly one immutable **40-character** commit SHA. The catalog pins
-`07bfaaaeb58fed1fa2d717f2c201e7bb17a61965` (v0.2.2), the commit the maintainer reviewed, so pinning
-that value gives you exactly the reviewed code:
+`--ref` takes exactly one immutable **40-character** commit SHA. The catalog selects the reviewed
+commit; read its exact SHA from the catalog YAML
+(`plugin-catalog/assumption-ledger.yaml` in `NousResearch/hermes-agent`) or `hermes plugins info
+assumption-ledger`, and pinning that value gives you exactly the reviewed code:
 
 ```bash
 hermes plugins install itzebe/hermes-assumption-ledger \
-  --ref 07bfaaaeb58fed1fa2d717f2c201e7bb17a61965
+  --ref <the-SHA-from-the-catalog-entry>
 ```
 
 An explicit `--ref` makes the install a **custom pin**: it is no longer the catalog's reviewed
@@ -306,7 +307,8 @@ The plugin **is in the official Hermes plugin catalog**. The upstream pull reque
 - Pull request: [#150212](https://github.com/NousResearch/hermes-agent/pull/150212) — **merged**
 - Entry: `plugin-catalog/assumption-ledger.yaml`
 - Version: `0.2.2`
-- Pinned commit: `07bfaaaeb58fed1fa2d717f2c201e7bb17a61965`
+- Pinned commit: read from the entry (the catalog YAML is authoritative; this file does not copy the
+  SHA so it cannot go stale)
 - Maintainer: `itzebe` · Tier: `community` · Category: `memory`
 - Requires: `hermes >=0.23.0` · 6 tools · 4 hooks · no env vars
 
@@ -317,10 +319,11 @@ hermes plugins search assumption-ledger     # shows the catalog version and pin
 hermes plugins info   assumption-ledger     # shows the pin, tools, hooks, maintainer
 ```
 
-The pinned commit `07bfaaa…` is an ancestor of the default branch, so it stays reachable and
+The catalog-selected commit is an ancestor of the default branch, so it stays reachable and
 installable by `--ref` even as `main` moves forward.
 
-**Honest limitations.** The repository's default branch (`main`) is still `v0.2.0`; the catalog pin
-carries the security fixes `main` does not yet have, so the two install methods are not
-equivalent. A catalog install is served from a locally cached catalog, so a version published very
-recently can take a short while to appear — `hermes plugins search` reports what the cache holds.
+**Honest limitations.** The catalog installs a specific reviewed commit; the repository's default
+branch (`main`) is mutable and currently reports `v0.2.2`, so a later `main` may diverge from the
+reviewed commit. Prefer the catalog install. A catalog install is served from a locally cached
+catalog, so a version published very recently can take a short while to appear — `hermes plugins
+search` reports what the cache holds.

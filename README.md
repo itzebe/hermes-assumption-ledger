@@ -176,11 +176,12 @@ Plugin Doctor: .
 
 Records are written to `<hermes home>/plugin-data/assumption-ledger/ledger.db`.
 
-> **Catalog pin.** The catalog entry pins
-> `07bfaaaeb58fed1fa2d717f2c201e7bb17a61965` (v0.2.2). A catalog install is
-> catalog-cached, so a newly published version can take a short while to appear. The repository's
-> default branch (`main`) is still `v0.2.0`, so the two install methods are **not** equivalent —
-> the catalog pin carries the security fixes that `main` does not yet contain.
+> **Catalog pin.** The catalog entry installs one immutable commit. The authoritative source for
+> its exact SHA is the catalog YAML,
+> [`plugin-catalog/assumption-ledger.yaml`](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/assumption-ledger.yaml),
+> not this file. A catalog install is catalog-cached, so a newly published version can take a short
+> while to appear. The repository's default branch (`main`) is mutable and currently reports
+> `v0.2.2`; the catalog pin is the reviewed commit, so prefer the catalog install.
 
 Full instructions, including pinning a revision and removing the plugin, are in
 [docs/INSTALLATION.md](docs/INSTALLATION.md).
@@ -296,8 +297,9 @@ Documented in full across [docs/](docs/) and
   spec's `cwd` against `CheckContext.root`. The context's own `cwd` field is accepted, stored, and
   never read — a nonexistent `cwd` produces identical results.
 - **No tags or releases.** `v0.2.2` exists only as a version string in the manifest and modules; the
-  catalog pins a commit SHA. The default branch (`main`) still reports `0.2.0` until the release
-  branch is merged — the catalog pin, not `main`, is the reviewed code.
+  official catalog selects one immutable commit, and the catalog YAML is the authoritative source for
+  its SHA. The default branch (`main`) is mutable and currently also reports `0.2.2` — the catalog
+  pin, not `main`, is the reviewed code.
 - **No CI.** There is no `.github/workflows/`; the suite is run locally.
 - **No unstated-assumption detection.** If the agent never states the belief, the plugin cannot
   capture it.

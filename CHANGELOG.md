@@ -16,16 +16,18 @@ SHA when you need an immutable reference.
 
 ### What the pinned commit contains
 
-The catalog entry pins `07bfaaaeb58fed1fa2d717f2c201e7bb17a61965`, the commit the maintainer
-reviewed for `v0.2.2`. It contains every fix described below, including the git-hardening change
-under `[0.2.2]`.
+The official catalog installs one immutable commit — the commit the maintainer reviewed for
+`v0.2.2`. It contains every fix described below, including the git-hardening change under
+`[0.2.2]`. The authoritative source for the exact SHA is the upstream catalog entry,
+`plugin-catalog/assumption-ledger.yaml`; this file deliberately does not copy a SHA that would go
+stale.
 
 The consequence for a reviewer: **the pinned SHA in the catalog must match the SHA that contains
 the fixes you are reviewing.** If it does not, the catalog is stale. Verify the pin against the
 upstream entry, not this file:
 
 ```bash
-hermes plugins info assumption-ledger     # prints "Pinned SHA: 07bfaaa…"
+hermes plugins info assumption-ledger     # prints the pinned SHA
 ```
 
 ### A note on version strings
@@ -34,13 +36,34 @@ All four version strings (`plugin.yaml`, `pyproject.toml`, `__init__.py`, `ledge
 `0.2.2` and agree. `tests/test_config.py::test_versions_agree_everywhere` fails if they diverge
 again.
 
+## [Unreleased] — documentation accuracy: release metadata and catalog reference
+
+Documentation and discoverability only. **No production code changed**, and the version string
+stays `0.2.2`. This entry corrects release metadata that was written while `main` was still `0.2.0`
+and became stale once the release-sync pull request merged: `main` now reports `0.2.2`, and the
+catalog pin is described as the authoritative reviewed commit rather than copied as a literal SHA
+that goes stale.
+
+### Fixed
+
+- **Stale "main is still 0.2.0" claims removed.** `llms.txt`, `README.md`, `docs/INSTALLATION.md`
+  and `CHANGELOG.md` said the default branch still reported `0.2.0`. `main` now reports `0.2.2`, so
+  each states the default branch is mutable and currently reports `0.2.2`, distinct from the
+  immutable reviewed commit the catalog installs.
+- **Stale hard-coded catalog pins replaced with a pointer to the authoritative catalog YAML.**
+  `llms.txt` hard-coded `07bfaaa…` as "the reviewed commit" and `README.md`, `docs/INSTALLATION.md`
+  and `CHANGELOG.md` copied the same SHA. The pin is now read from
+  `https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/assumption-ledger.yaml`
+  (or `hermes plugins info assumption-ledger`), so the documents no longer go stale when the
+  catalog is re-pinned. The mutable default branch is now clearly distinguished from the immutable
+  catalog-selected commit. The clean/smudge filter-driver disclosure is unchanged.
+
 ## [Unreleased] — release synchronization and AI discoverability
 
 Documentation and discoverability only. **No production code changed**, and the version string
-stays `0.2.2`. This entry exists because the catalog-pinned release branch (`0.2.2`) is three
-commits ahead of `main` (`0.2.0`); this work brings the documentation and the discoverability
-surfaces up to date with the pinned code, and is the content of the release-sync pull request that
-fast-forwards `main`.
+stays `0.2.2`. This entry brought the documentation and the discoverability surfaces up to date with
+the pinned `0.2.2` release and is the content of the release-sync pull request that fast-forwarded
+`main` from `0.2.0`.
 
 ### Added
 

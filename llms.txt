@@ -12,7 +12,9 @@ the exact location of each. It is not a substitute for the README and the docs i
 
 - Repository: https://github.com/itzebe/hermes-assumption-ledger
 - Version: 0.2.2
-- Pinned commit (reviewed): 07bfaaaeb58fed1fa2d717f2c201e7bb17a61965
+- Default branch: `main` — mutable; tracks current development (currently 0.2.2)
+- Reviewed commit: the immutable commit the official catalog installs. The catalog YAML is the
+  authoritative source for its exact SHA; do not rely on a SHA copied into this file.
 - License: MIT
 - Language: Python (standard library only; no third-party runtime dependencies)
 
@@ -192,8 +194,9 @@ Reproduce: `python -m pytest -q`. Full detail: docs/TESTING.md.
 ## Known limitations
 
 - `CheckContext.cwd` is accepted but not read; use the check spec's `cwd`.
-- No git tags or releases; the catalog pins a commit SHA. The default branch (`main`) still reports
-  0.2.0 — the catalog pin, not `main`, is the reviewed code.
+- No git tags or releases; the official catalog selects one immutable commit. The plugin's default
+  branch (`main`) is mutable and currently reports 0.2.2; the catalog YAML is the authoritative
+  source for the exact reviewed commit.
 - No CI: there is no `.github/workflows/`; the suite is run locally.
 - No unstated-assumption detection: if the agent never states the belief, it cannot be captured.
 - `unsupported` checks stay `UNVERIFIED` forever by design.
