@@ -4,8 +4,8 @@ How to install, verify, update and remove Assumption Ledger.
 
 - [Prerequisites](#prerequisites)
 - [Which install method should I use?](#which-install-method-should-i-use)
-- [Method 1: install from this repository](#method-1-install-from-this-repository)
-- [Method 2: install from the official catalog](#method-2-install-from-the-official-catalog)
+- [Method 1: install from the official catalog](#method-1-install-from-the-official-catalog)
+- [Method 2: install from this repository](#method-2-install-from-this-repository)
 - [Verifying the installation](#verifying-the-installation)
 - [Activation](#activation)
 - [Dependencies](#dependencies)
@@ -13,7 +13,7 @@ How to install, verify, update and remove Assumption Ledger.
 - [Storage location](#storage-location)
 - [Updating](#updating)
 - [Uninstalling](#uninstalling)
-- [Catalog status: PR #150212](#catalog-status-pr-150212)
+- [Catalog status](#catalog-status)
 
 ## Prerequisites
 
@@ -30,28 +30,39 @@ model call, and no network request of its own.
 
 ## Which install method should I use?
 
-There are two, and they are **not** equivalent today.
+There are two, and they are **not** equivalent.
 
-| | Method 1: this repository | Method 2: official catalog |
+| | Method 1: official catalog | Method 2: this repository |
 | --- | --- | --- |
-| Status | **Available now** | **Not yet available** |
-| Identifier | `itzebe/hermes-assumption-ledger` | `assumption-ledger` |
-| Installs | The repository's current default branch | The reviewed pinned SHA from the catalog |
-| Review | None beyond the upstream validator | Catalog review plus a pinned SHA |
+| Status | **Available now** | Available, but a custom source |
+| Identifier | `assumption-ledger` | `itzebe/hermes-assumption-ledger` |
+| Installs | The reviewed pinned SHA from the catalog (`07bfaaa…`, v0.2.2) | The repository's **default branch** (`main`, still v0.2.0) |
+| Review | Catalog review plus a pinned SHA | None beyond the upstream validator; the install-time scan may refuse it |
+| Recommended | **Yes** | Only for inspecting or pinning an unreleased revision |
 
-**Use Method 1 today.** Method 2 is blocked until the catalog PR is merged — see
-[Catalog status](#catalog-status-pr-150212). If you try the bare name `assumption-ledger` right
-now, Hermes rejects it, because a bare name is only resolved through the catalog:
+**Use Method 1.** The bare name `assumption-ledger` resolves through the official catalog, which
+carries the reviewed code and the security fixes. The `owner/repo` form clones the default branch
+(which is still the older `v0.2.0`) and Hermes flags it as an **unreviewed custom source** — its
+install-time scan may block it with `Decision: BLOCKED`.
 
+## Method 1: install from the official catalog
+
+```bash
+hermes plugins install assumption-ledger
 ```
-$ hermes plugins install assumption-ledger
-Error: Invalid plugin identifier: 'assumption-ledger'. Use a Git URL or 'owner/repo' shorthand
-(optionally with a subdirectory: 'owner/repo/path/to/plugin').
+
+Add `--enable` to skip the "Enable now?" prompt in a non-interactive session:
+
+```bash
+hermes plugins install assumption-ledger --enable
 ```
 
-That error message is real output from the current Hermes CLI, not a paraphrase.
+Hermes resolves the bare name through the catalog, prints the reviewed entry and its pin, and
+clones that exact commit. The catalog is cached locally, so a version published very recently can
+take a short while to appear; run `hermes plugins search assumption-ledger` to see the version the
+local catalog currently offers.
 
-## Method 1: install from this repository
+## Method 2: install from this repository
 
 Hermes accepts a Git URL or an `owner/repo` shorthand. Both were verified to resolve:
 
@@ -93,24 +104,16 @@ hermes plugins install itzebe/hermes-assumption-ledger --ref <40-character-commi
 ```
 
 `--ref` takes exactly one immutable **40-character** commit SHA. The catalog pins
-`388cf029ccc5324c3f246423c8d461aa93d60090` (v0.1.1), so pinning that value gives you exactly the
-reviewed code:
+`07bfaaaeb58fed1fa2d717f2c201e7bb17a61965` (v0.2.2), the commit the maintainer reviewed, so pinning
+that value gives you exactly the reviewed code:
 
 ```bash
 hermes plugins install itzebe/hermes-assumption-ledger \
-  --ref 388cf029ccc5324c3f246423c8d461aa93d60090
+  --ref 07bfaaaeb58fed1fa2d717f2c201e7bb17a61965
 ```
 
-## Method 2: install from the official catalog
-
-**This does not work yet.** The catalog entry exists as an open pull request, not as a merged
-listing. When PR #150212 is merged, the command will be:
-
-```bash
-hermes plugins install assumption-ledger
-```
-
-Do not use this command today; it fails as shown above. Use Method 1.
+An explicit `--ref` makes the install a **custom pin**: it is no longer the catalog's reviewed
+entry, and the install-time scan applies as for any unreviewed source.
 
 ## Verifying the installation
 
@@ -153,9 +156,9 @@ Expected result:
 
 ```
 Plugin Doctor: <path>
-  manifest: assumption-ledger 0.2.0 (standalone)
+  manifest: assumption-ledger 0.2.2 (standalone)
   OK: runtime discovery, manifest parsing, import, and registration passed
-  registrations: 4 tool(s), 4 hook(s)
+  registrations: 6 tool(s), 4 hook(s)
 ```
 
 **6 tools and 4 hooks** is the correct count. If you see fewer, something failed to register.
@@ -231,12 +234,21 @@ pip install -e ".[dev]"    # installs pytest>=8.0
 
 ## Configuration
 
-There is nothing to configure for normal use. The manifest declares three options
-(`freshness_seconds`, `auto_check`, `max_reinject`), but **the implementation does not read them** —
-the effective values are compiled-in constants that happen to equal the declared defaults.
+There is nothing to configure for normal use. The manifest declares five options, and all five are
+read at runtime through the sanctioned `PluginContext.get_config` seam:
 
-**Read [CONFIGURATION.md](CONFIGURATION.md#declared-configuration-options-are-not-currently-read-at-runtime)
-before setting any of them.** Setting them will pass validation and have no effect.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `freshness_seconds` | `86400` | How long a pass stays `VALID` before it goes `STALE`. |
+| `auto_check` | `false` | Verify an assumption as soon as it is recorded. |
+| `max_reinject` | `25` | Maximum live assumptions re-injected per turn. |
+| `command_allowlist` | `[]` | Executable names `command_succeeds` may run. Empty disables command checks. |
+| `allow_private_urls` | `false` | Permit HTTP checks to reach private/loopback hosts (metadata stays blocked). |
+
+A malformed value falls back to the default rather than disabling the plugin.
+`/assumptions config` prints the effective values, and
+[tests/test_config.py](../tests/test_config.py) asserts an observable effect for each setting. See
+[CONFIGURATION.md](CONFIGURATION.md) for the full reference.
 
 ## Storage location
 
@@ -286,22 +298,29 @@ rm -rf "<hermes home>/plugin-data/assumption-ledger/"
 Deletion is not a troubleshooting step. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for what to do
 when the plugin misbehaves — the ledger is usually the evidence you need, not the cause.
 
-## Catalog status: PR #150212
+## Catalog status
 
-The upstream catalog pull request is **open and not merged**:
+The plugin **is in the official Hermes plugin catalog**. The upstream pull request is merged:
 
 - Repository: `NousResearch/hermes-agent`
-- Pull request: [#150212](https://github.com/NousResearch/hermes-agent/pull/150212)
-- State: open, not a draft, one file added (`plugin-catalog/assumption-ledger.yaml`, +37 lines)
-- Base: `main`
+- Pull request: [#150212](https://github.com/NousResearch/hermes-agent/pull/150212) — **merged**
+- Entry: `plugin-catalog/assumption-ledger.yaml`
+- Version: `0.2.2`
+- Pinned commit: `07bfaaaeb58fed1fa2d717f2c201e7bb17a61965`
+- Maintainer: `itzebe` · Tier: `community` · Category: `memory`
+- Requires: `hermes >=0.23.0` · 6 tools · 4 hooks · no env vars
 
-Until it merges:
+Verify the listing yourself against the upstream repository, not this document:
 
-- **Do not** describe the plugin as available in the official catalog.
-- **Do not** use the bare-name install command; it fails.
-- **Do** install by identifier (`itzebe/hermes-assumption-ledger`), which is the supported path
-  today.
+```bash
+hermes plugins search assumption-ledger     # shows the catalog version and pin
+hermes plugins info   assumption-ledger     # shows the pin, tools, hooks, maintainer
+```
 
-The catalog entry pins commit `388cf029ccc5324c3f246423c8d461aa93d60090`. That commit is an
-ancestor of the current default branch, so it remains reachable and installable by `--ref` even as
-`main` moves forward.
+The pinned commit `07bfaaa…` is an ancestor of the default branch, so it stays reachable and
+installable by `--ref` even as `main` moves forward.
+
+**Honest limitations.** The repository's default branch (`main`) is still `v0.2.0`; the catalog pin
+carries the security fixes `main` does not yet have, so the two install methods are not
+equivalent. A catalog install is served from a locally cached catalog, so a version published very
+recently can take a short while to appear — `hermes plugins search` reports what the cache holds.

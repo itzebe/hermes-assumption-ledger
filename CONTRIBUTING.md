@@ -240,10 +240,8 @@ These are real, documented, and open. Each is recorded in
 
 | Issue | Difficulty | Note |
 | --- | --- | --- |
-| [KI-1](CHANGELOG.md#ki-1-declared-configuration-options-are-never-read) — config options never read | Medium | Wire `ctx.get_config` into `LedgerHost`. Changes behaviour, so it needs a discussion and a changelog entry. |
 | [KI-2](CHANGELOG.md#ki-2-checkcontextcwd-is-accepted-but-never-read) — `CheckContext.cwd` unused | Low | Either use it as the default for spec `cwd`, or remove the parameter. Either is a behaviour change. |
-| [KI-3](CHANGELOG.md#ki-3-inconsistent-version-string) — version mismatch | Trivial | Make `__init__.py` read `ledger.__version__` rather than restating it. |
-| [KI-4](CHANGELOG.md#ki-4-no-git-tags-or-releases) — no tags | Trivial | Tag `v0.1.1` at the pinned commit. |
+| [KI-4](CHANGELOG.md#ki-4-no-git-tags-or-releases) — no tags | Trivial | Tag `v0.2.2` at the pinned commit. |
 | [KI-5](CHANGELOG.md#ki-5-no-continuous-integration) — no CI | Low | Add the workflow sketched in `docs/TESTING.md`. High value: nothing currently enforces the suite. |
 | [KI-6](CHANGELOG.md#ki-6-db_row_count-interpolates-the-where-clause-into-sql) — `where` interpolation | Medium | Parameterising is hard for an arbitrary predicate. At minimum, validate or document more strictly. |
 | [KI-9](CHANGELOG.md#ki-9-the-database-is-unencrypted-and-has-no-integrity-protection) — no encryption | Hard | Out of scope for a stdlib-only plugin, but a documented threat model is not. |

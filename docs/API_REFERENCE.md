@@ -14,7 +14,7 @@ directly. Everything here was read from the source and exercised against the run
 
 ## Registered tools
 
-Four tools, all in the toolset `assumption_ledger`. Every handler returns a **JSON string** —
+Six tools, all in the toolset `assumption_ledger`. Every handler returns a **JSON string** —
 including on error, where the string is `{"error": "..."}`. No handler raises.
 
 ### `assumption_record`
@@ -136,6 +136,69 @@ assumption_decide({"statement": "run app.py", "depends_on": ["asm_4097c971c7d0"]
 
 assumption_decide({"statement": "x", "depends_on": "nope"})
   {"error": "depends_on must be a list of assumption ids"}
+```
+
+### `assumption_resolve`
+
+Re-check an assumption and report the outcome. It runs the deterministic check and applies the
+verdict — it does **not** force a status, so a re-check that errors leaves the record `UNVERIFIED`
+rather than pretending it was verified.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | Assumption id. |
+| `note` | string | no | Note recorded with the action. |
+
+**Returns**: `{"assumption": ..., "outcome": ..., "previous_status": ..., "status": ...,
+"verdict": ..., "detail": ..., "note": ...}`. `outcome` is one of `reverified`, `still_invalidated`
+or `unchanged` (when no verdict could be reached).
+
+**Errors**: `{"error": "id is required"}`.
+
+**Side effects**: inserts an evidence row and updates the record's status and counters.
+
+Real invocation and output:
+
+```
+assumption_record({"statement": "tmp dir exists", "check": {"kind": "file_exists", "path": "/tmp"}})
+  {"id": "asm_6f5240a6d631", "status": "UNVERIFIED", "statement": "tmp dir exists"}
+
+assumption_resolve({"id": "asm_6f5240a6d631", "note": "re-checked"})
+  {"assumption": "asm_6f5240a6d631", "outcome": "reverified", "previous_status": "UNVERIFIED",
+   "status": "VALID", "verdict": "pass", "detail": "path exists", "note": "re-checked"}
+
+assumption_resolve({})
+  {"error": "id is required"}
+```
+
+### `assumption_drop`
+
+Retire an assumption from the live set without claiming it was verified. Dropping writes no pass
+verdict: it records that a *user* retired the assumption, and unblocks any decision that depended on
+it.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | Assumption id. |
+| `note` | string | no | Note recorded with the action. |
+
+**Returns**: `{"assumption": ..., "outcome": "dropped", "previous_status": ..., "status":
+"DROPPED", "unblocked_decisions": [...], "note": ...}`.
+
+**Errors**: `{"error": "id is required"}`.
+
+**Side effects**: sets the record to `DROPPED` and recomputes the blocked state of dependent
+decisions.
+
+Real invocation and output:
+
+```
+assumption_drop({"id": "asm_6f5240a6d631", "note": "no longer relevant"})
+  {"assumption": "asm_6f5240a6d631", "outcome": "dropped", "previous_status": "VALID",
+   "status": "DROPPED", "unblocked_decisions": [], "note": "no longer relevant"}
+
+assumption_drop({})
+  {"error": "id is required"}
 ```
 
 ## Registered hooks

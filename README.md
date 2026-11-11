@@ -1,16 +1,42 @@
 # Assumption Ledger
 
-A persistent operational-assumption ledger for Hermes Agent.
+A persistent operational-assumption ledger for Hermes Agent: it captures the assumptions an agent
+states in its own messages, keeps the sentence each came from as provenance, verifies them with
+deterministic checks, and warns when work recorded in a session depends on an assumption that
+evidence has contradicted.
 
-An agent silently builds on things it has not checked: a file it believes exists, a branch it
-believes it is on, a deployment it believes is live, a table it believes has rows. When one of
-those beliefs is wrong, the failure surfaces much later and somewhere else. Assumption Ledger
-captures those beliefs as first-class records, keeps their provenance, verifies them with
-deterministic checks, and stops only the work that actually depends on a belief that has been
-contradicted.
+**Who needs it.** Anyone running a long-lived Hermes agent that acts on the world — deploying,
+editing, migrating, calling APIs. The agent silently builds on things it has not checked: a file it
+believes exists, a branch it believes it is on, a deployment it believes is live, a table it
+believes has rows. When one of those beliefs is wrong, the failure surfaces much later and
+somewhere else.
 
-Everything is deterministic. No LLM call is made to extract or verify an assumption, so the
-plugin needs no provider credentials and cannot be argued into a verdict.
+**What it solves.** It turns those silent beliefs into first-class, inspectable records, each with a
+deterministic pass/fail check, so a contradiction is caught where the belief was stated rather than
+where it finally broke.
+
+**How it works.** A `post_llm_call` hook captures explicit markers (`ASSUMPTION:`, `ASSUME:`,
+`PRECONDITION:`) and a small set of anchored phrases from the assistant's **own message** — never
+from tool output — and keeps the sentence each came from. A deterministic checker — one of twelve
+kinds — returns exactly `pass`, `fail` or `error`. A `pre_llm_call` hook re-injects live assumptions
+and warns when a session's recorded decision depends on a contradicted one. Everything is stored in
+local SQLite under the plugin data directory.
+
+**What makes it different.** Zero LLM calls in extraction or verification (no provider credentials,
+and no prompt-injection surface in verification); uncertainty never becomes invalidation (a
+timeout, 429 or 5xx yields `UNVERIFIED`, never `INVALIDATED`); provenance is retained;
+contradictions survive transient verification failures; decisions are dependency-aware and
+session-scoped; and recovery is always available through `resolve` or `drop`. It is an assumption
+*ledger*, not a generic memory store.
+
+**Install.** Requires Hermes Agent `>=0.23.0` and Python `>=3.11`; no third-party runtime
+dependencies.
+
+```bash
+hermes plugins install assumption-ledger --enable        # from the official Hermes catalog
+```
+
+See [Install](#install) for the repository-pinned alternative and its review caveat.
 
 - [What it does](#what-it-does)
 - [The one rule that matters](#the-one-rule-that-matters)
@@ -105,15 +131,30 @@ relied on in session A does not touch session B.
 by default, so a build artifact, a log or the ledger's own database cannot invalidate the
 assumption. Pass `include_untracked: true` when untracked files genuinely matter.
 
-The git checks never let a repository choose a program to run. Every `git` invocation is started
-with `-c core.fsmonitor=false -c core.hooksPath=/dev/null` (a command-line `-c` beats the
-repository's own configuration) and the minimal environment, and `git status` adds
-`--no-optional-locks`, so a checked-out repository cannot execute code through `core.fsmonitor` or a
-hooks directory, and the host environment is not visible to git or to anything it spawns.
+The git checks do not let a repository choose a program to run through `core.fsmonitor` or
+`core.hooksPath`. Every `git` invocation is started with `-c core.fsmonitor=false -c
+core.hooksPath=/dev/null` (a command-line `-c` beats the repository's own configuration) and the
+minimal environment, and `git status` adds `--no-optional-locks`, so the host environment is not
+visible to git or to anything it spawns. One vector remains by design: a `clean`/`smudge` filter
+driver set in that repository's own `.git/config` still applies to `git status`, so point git checks
+only at repositories whose local git config you trust. See
+[docs/SECURITY.md](docs/SECURITY.md#git-checks-and-repository-controlled-execution).
 
 ## Install
 
 Requires Hermes Agent `>=0.23.0` and Python `>=3.11`. **No third-party runtime dependencies.**
+
+Assumption Ledger is in the **official Hermes plugin catalog** (merged
+[#150212](https://github.com/NousResearch/hermes-agent/pull/150212)). Install it by its catalog
+name — this resolves the reviewed entry and installs the pinned commit:
+
+```bash
+hermes plugins install assumption-ledger --enable
+```
+
+The `owner/repo` form also works, but it clones the repository's **default branch** rather than the
+reviewed pin, and Hermes treats it as an **unreviewed custom source** — its install-time scan may
+refuse it:
 
 ```bash
 hermes plugins install itzebe/hermes-assumption-ledger --enable
@@ -127,18 +168,18 @@ hermes plugins doctor .
 
 ```
 Plugin Doctor: .
-  manifest: assumption-ledger 0.2.0 (standalone)
+  manifest: assumption-ledger 0.2.2 (standalone)
   OK: runtime discovery, manifest parsing, import, and registration passed
-  registrations: 4 tool(s), 4 hook(s)
+  registrations: 6 tool(s), 4 hook(s)
 ```
 
 Records are written to `<hermes home>/plugin-data/assumption-ledger/ledger.db`.
 
-> **Not yet in the official catalog.** The catalog entry is an open pull request
-> ([NousResearch/hermes-agent#150212](https://github.com/NousResearch/hermes-agent/pull/150212)),
-> not a merged listing. Use the `owner/repo` identifier shown above. The bare-name install
-> (`hermes plugins install assumption-ledger`) fails until that PR merges, because a bare name is
-> resolved only through the catalog.
+> **Catalog pin.** The catalog entry pins
+> `07bfaaaeb58fed1fa2d717f2c201e7bb17a61965` (v0.2.2). A catalog install is
+> catalog-cached, so a newly published version can take a short while to appear. The repository's
+> default branch (`main`) is still `v0.2.0`, so the two install methods are **not** equivalent —
+> the catalog pin carries the security fixes that `main` does not yet contain.
 
 Full instructions, including pinning a revision and removing the plugin, are in
 [docs/INSTALLATION.md](docs/INSTALLATION.md).
@@ -207,6 +248,8 @@ what happens when the provider goes down mid-incident.
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Diagnostic procedures for common symptoms. |
 | [CHANGELOG.md](CHANGELOG.md) | Release history and known issues. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup and conventions. |
+| [llms.txt](llms.txt) | A concise, machine-readable entry point for AI assistants and research tools. |
+| [docs/AI_DISCOVERY.md](docs/AI_DISCOVERY.md) | The repository's public discovery surfaces and how to verify them. |
 
 ## Configuration
 
@@ -251,7 +294,9 @@ Documented in full across [docs/](docs/) and
 - **`CheckContext.cwd` is unused.** Git and command checks resolve their directory from the check
   spec's `cwd` against `CheckContext.root`. The context's own `cwd` field is accepted, stored, and
   never read — a nonexistent `cwd` produces identical results.
-- **No tags or releases.** `v0.2.0` exists only in the manifest; the catalog pins a commit SHA.
+- **No tags or releases.** `v0.2.2` exists only as a version string in the manifest and modules; the
+  catalog pins a commit SHA. The default branch (`main`) still reports `0.2.0` until the release
+  branch is merged — the catalog pin, not `main`, is the reviewed code.
 - **No CI.** There is no `.github/workflows/`; the suite is run locally.
 - **No unstated-assumption detection.** If the agent never states the belief, the plugin cannot
   capture it.

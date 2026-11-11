@@ -248,8 +248,9 @@ There are effectively **two** layers, not a general precedence chain:
    omits. When embedded, the caller sets them; under Hermes, the adapter resolves `root`/`cwd` from
    the agent's working directory.
 
-Plugin settings under `plugins.entries.<plugin-id>.settings` are **not** a layer, because nothing
-reads them (see [above](#declared-configuration-options-are-not-currently-read-at-runtime)).
+Plugin settings under `plugins.entries.<plugin-id>.settings` are read once at first use through
+`PluginContext.get_config` (see [How the values are read](#how-the-values-are-read)) and cached on
+the host; they are not re-read per check.
 
 For direct embedding, precedence is simply: explicit `CheckContext` argument, else the built-in
 default in `CheckContext.__init__`.

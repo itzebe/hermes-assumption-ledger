@@ -318,8 +318,14 @@ close that:
   environment — API tokens, cloud credentials — is not visible to git or to any program git spawns;
 - the existing timeout, error handling and output limits are unchanged, and no shell is used.
 
-This raises the bar rather than removing the class: git still runs in the repository's directory,
-and a check may still name any path the process can read.
+This raises the bar rather than removing the class. Two limits remain, and both are honest rather
+than theoretical:
+
+- **Filter drivers still apply.** A `clean`/`smudge` filter driver set in that repository's own
+  `.git/config` is still honoured by `git status`, because git runs it before our `-c` overrides can
+  replace it. Point git checks only at repositories whose local git configuration you trust.
+- Git still runs in the repository's directory, and a check may still name any path the process can
+  read.
 
 ### HTTP checks and SSRF
 

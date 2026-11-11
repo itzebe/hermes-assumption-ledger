@@ -258,9 +258,9 @@ has drifted from the code.
 
 ```
 Plugin Doctor: <path>
-  manifest: assumption-ledger 0.2.0 (standalone)
+  manifest: assumption-ledger 0.2.2 (standalone)
   OK: runtime discovery, manifest parsing, import, and registration passed
-  registrations: 4 tool(s), 4 hook(s)
+  registrations: 6 tool(s), 4 hook(s)
 ```
 
 **6 tools, 4 hooks** is the expected count. Fewer means something failed to register.

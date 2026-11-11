@@ -14,20 +14,66 @@ catalog entry pins a commit SHA, which is the authoritative reference for the re
 That means the entries below describe the state of the code, not tagged artifacts. Use the commit
 SHA when you need an immutable reference.
 
-### What the pinned commit does and does not contain
+### What the pinned commit contains
 
-The catalog entry currently pins `87a2827ca18830755959e6a881b0ff0dd965daad`, which is the commit the
-maintainer reviewed for `v0.2.1`. That commit does not contain the git-hardening fix described under
-`[0.2.2]` below. The catalog entry is re-pinned to the new commit as part of the same change set.
+The catalog entry pins `07bfaaaeb58fed1fa2d717f2c201e7bb17a61965`, the commit the maintainer
+reviewed for `v0.2.2`. It contains every fix described below, including the git-hardening change
+under `[0.2.2]`.
 
 The consequence for a reviewer: **the pinned SHA in the catalog must match the SHA that contains
-the fixes you are reviewing.** If it does not, the catalog is stale.
+the fixes you are reviewing.** If it does not, the catalog is stale. Verify the pin against the
+upstream entry, not this file:
+
+```bash
+hermes plugins info assumption-ledger     # prints "Pinned SHA: 07bfaaa…"
+```
 
 ### A note on version strings
 
 All four version strings (`plugin.yaml`, `pyproject.toml`, `__init__.py`, `ledger/__init__.py`) are
 `0.2.2` and agree. `tests/test_config.py::test_versions_agree_everywhere` fails if they diverge
 again.
+
+## [Unreleased] — release synchronization and AI discoverability
+
+Documentation and discoverability only. **No production code changed**, and the version string
+stays `0.2.2`. This entry exists because the catalog-pinned release branch (`0.2.2`) is three
+commits ahead of `main` (`0.2.0`); this work brings the documentation and the discoverability
+surfaces up to date with the pinned code, and is the content of the release-sync pull request that
+fast-forwards `main`.
+
+### Added
+
+- `llms.txt` — a concise, machine-readable entry point for AI assistants and research tools, with
+  every claim tied to a location in the source.
+- `docs/AI_DISCOVERY.md` — the repository's public discovery surfaces, how to verify each, and an
+  explicit list of what is deliberately not done (no fabricated badges, no invented statistics, no
+  `robots.txt`, no claim of guaranteed indexing).
+- README: the first screen now leads with what it is, who needs it, the problem, how it works, what
+  makes it different and how to install it, for retrieval.
+
+### Fixed
+
+- **Stale catalog status removed.** README and `docs/INSTALLATION.md` claimed the plugin was "not
+  yet in the official catalog" and that the bare-name install fails. The catalog PR #150212 is
+  merged and the bare name installs the pinned commit; both documents now say so, and document the
+  `owner/repo` form's real behaviour (default branch, unreviewed custom source, install-time scan).
+- **Stale catalog pin corrected** from `388cf029…` (v0.1.1) to `07bfaaa…` (v0.2.2) in
+  `docs/INSTALLATION.md`.
+- **Stale configuration claim removed.** `docs/INSTALLATION.md` claimed the five declared settings
+  were never read; they are read at runtime through `PluginContext.get_config`. Corrected, and the
+  three dangling `#declared-configuration-options-are-not-currently-read-at-runtime` anchors in
+  `docs/CONFIGURATION.md`, `docs/TROUBLESHOOTING.md` and `docs/USER_GUIDE.md` are fixed.
+- **Doctor output corrected to 6 tools** (was "4 tool(s)") and **version strings corrected to
+  `0.2.2`** (were `0.2.0`) in README, `docs/INSTALLATION.md`, `docs/TESTING.md` and
+  `docs/TROUBLESHOOTING.md`.
+- **`docs/API_REFERENCE.md` documented six tools**, not four: added the missing `assumption_resolve`
+  and `assumption_drop` sections with real captured output.
+- `CHANGELOG.md` "known issues" and `CONTRIBUTING.md` now describe the state as of `0.2.2`, and the
+  resolved-KI list no longer offers already-fixed issues (KI-1, KI-3) as open work.
+- **Git filter-driver limitation documented.** The maintainer's disclosure that a repository-local
+  `clean`/`smudge` filter driver still applies to `git status` is now stated in `docs/SECURITY.md`
+  and the README's git-check note.
 
 ## [0.2.2] — harden the git checks against repository-controlled execution
 
@@ -233,14 +279,14 @@ The state of the plugin as submitted to the Hermes plugin catalog. Untagged.
 
 ## Known issues
 
-State as of `0.2.0`. Issues fixed in this release are listed first so the review trail is intact.
+State as of `0.2.2`. Issues fixed in `0.2.0` are listed first so the review trail is intact.
 
 ### Resolved in 0.2.0
 
 | ID | Issue | Resolution |
 | --- | --- | --- |
 | KI-1 | Declared configuration options were never read | All five are now read through `PluginContext.get_config`, with `test_config.py` asserting an observable effect for each. |
-| KI-3 | Inconsistent version strings | All four strings are `0.2.0`; `test_versions_agree_everywhere` guards it. |
+| KI-3 | Inconsistent version strings | All four strings agree (currently `0.2.2`); `test_versions_agree_everywhere` guards it. |
 | KI-6 | `db_row_count` interpolated the `where` clause | The clause is validated against a simple-predicate grammar; a refusal returns `error`. |
 | KI-7 | `command_succeeds` ran an arbitrary `argv` | Execution is off by default, gated by a configured `command_allowlist`, and runs with a minimal environment. |
 | KI-10 | `http_json_field` stored the resolved value unbounded | Evidence now stores a bounded, type-tagged summary (`_summarize`); a string is truncated to 120 characters. A secret in a statement is still stored. |
@@ -259,7 +305,8 @@ is invisible in the default path — but an embedder setting only `cwd` will be 
 
 ### KI-4: No git tags or releases
 
-`v0.2.0` exists only in the manifest. There is no immutable tag to reference.
+`v0.2.2` exists only as a version string in the manifest and modules. There is no immutable tag to
+reference.
 
 **Workaround:** use the pinned commit SHA from the catalog entry.
 

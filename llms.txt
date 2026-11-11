@@ -1,0 +1,214 @@
+# Assumption Ledger
+
+> A persistent operational-assumption ledger plugin for Hermes Agent. It captures the assumptions an
+> agent states in its own messages (never from tool output), keeps the sentence each came from as
+> provenance, verifies them with deterministic checks, and warns when work recorded in a session
+> depends on an assumption that evidence has contradicted. Zero LLM calls in extraction or
+> verification.
+
+This file is a concise, machine-readable entry point for AI assistants, code-search tools and
+research agents. Every claim below is verifiable from the source in this repository; the file names
+the exact location of each. It is not a substitute for the README and the docs it links to.
+
+- Repository: https://github.com/itzebe/hermes-assumption-ledger
+- Version: 0.2.2
+- Pinned commit (reviewed): 07bfaaaeb58fed1fa2d717f2c201e7bb17a61965
+- License: MIT
+- Language: Python (standard library only; no third-party runtime dependencies)
+
+## Product identity
+
+- Name: Assumption Ledger
+- Type: Hermes Agent plugin (catalog name `assumption-ledger`; tier `community`, category `memory`)
+- Maintainer: itzebe
+- Official catalog listing: https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/assumption-ledger.yaml
+- Catalog entry pull request (merged): https://github.com/NousResearch/hermes-agent/pull/150212
+
+## Problem solved
+
+An agent silently builds on things it has not checked: a file it believes exists, a branch it
+believes it is on, a deployment it believes is live, a table it believes has rows. When one of those
+beliefs is wrong, the failure surfaces much later and somewhere else. Assumption Ledger turns those
+silent beliefs into first-class, inspectable records — each with a deterministic pass/fail check and
+the sentence it came from — so a contradiction is caught where the belief was stated, not where it
+finally broke.
+
+## Technical differentiation
+
+- Assumptions originate from the assistant's **own messages**, never from tool output. Tool output is
+  a prompt-injection vector and is deliberately not a capture source.
+- Provenance is retained: each record keeps up to 500 characters of the sentence it came from.
+- Verification is **deterministic**: twelve check kinds, each returning exactly `pass`, `fail` or
+  `error`. No LLM call is made to extract or verify anything.
+- No provider credentials are needed, and there is no prompt-injection surface in verification.
+- Uncertainty never becomes invalidation: a timeout, a 429/5xx, a DNS failure or an unknown check
+  kind yields `UNVERIFIED` (or `STALE` when fresh evidence existed), never `INVALIDATED`.
+- An existing contradiction survives a transient verification failure — only refuting evidence
+  clears it.
+- Decisions are dependency-aware and session-scoped: only a decision that recorded a dependency on a
+  contradicted assumption is blocked, and only in the session that recorded it.
+- Recovery is always possible through `resolve` (re-check) or `drop` (retire).
+- SQLite (WAL) persistence survives a restart, a compaction and `hermes plugins update`.
+
+This is an assumption ledger, not a generic memory store.
+
+## Architecture
+
+- `__init__.py` — Hermes adapter: registers 4 hooks, 6 tools, 1 slash command; owns the engine
+  singleton; lazy imports so an import failure degrades to a no-op rather than a crash.
+- `ledger/model.py` — records, lifecycle constants, content-addressed ids, and `status_after_check`,
+  the single rule the engine obeys.
+- `ledger/extractor.py` — conservative rule-based capture from assistant messages only.
+- `ledger/verifiers.py` — the twelve deterministic checks, with `CheckContext` as the injection seam.
+- `ledger/command_policy.py` — the `command_succeeds` allowlist and executable resolution.
+- `ledger/url_safety.py` — the SSRF policy for HTTP checks.
+- `ledger/store.py` — SQLite persistence in WAL mode.
+- `ledger/engine.py` — the single decision point for lifecycle status, propagation, freshness and
+  reporting.
+
+Data flow: assistant message -> `post_llm_call` capture -> extractor -> `assumption_record` ->
+deterministic check -> evidence row -> status transition -> `pre_llm_call` re-injection / `pre_verify`
+gate. Full detail: docs/ARCHITECTURE.md.
+
+## Installation
+
+Requires Hermes Agent >= 0.23.0 and Python >= 3.11.
+
+```
+hermes plugins install assumption-ledger --enable
+```
+
+The `owner/repo` form installs the default branch as an unreviewed custom source and may be refused
+by the install-time scan:
+
+```
+hermes plugins install itzebe/hermes-assumption-ledger --enable
+```
+
+Confirm it loaded (expect 6 tools and 4 hooks):
+
+```
+hermes plugins doctor .
+```
+
+Full instructions: docs/INSTALLATION.md.
+
+## Tools and hooks
+
+Tools (toolset `assumption_ledger`; every handler returns a JSON string):
+
+- `assumption_record` — record an assumption and its check.
+- `assumption_check` — run a check now and record evidence.
+- `assumption_status` — ledger summary.
+- `assumption_decide` — record a decision and the assumptions it depends on.
+- `assumption_resolve` — re-check an assumption and apply the verdict.
+- `assumption_drop` — retire an assumption without claiming it was verified.
+
+Hooks:
+
+- `pre_llm_call` — re-inject live assumptions; warn (never veto) when a contradicted assumption is
+  load-bearing for a session decision.
+- `post_llm_call` — capture from the assistant's own message.
+- `post_tool_call` — a deliberate no-op; tool output is never captured.
+- `pre_verify` — the one hard gate: hold an edited-code turn whose session recorded a decision on a
+  contradicted assumption.
+
+Slash command: `/assumptions [status|list|check [id]|show <id>|resolve <id>|drop <id>|config]`.
+
+Full detail: docs/API_REFERENCE.md.
+
+## Verification lifecycle
+
+Statuses: `VALID`, `INVALIDATED`, `UNVERIFIED`, `STALE`, `DROPPED`.
+
+- A pass makes an assumption `VALID`; it degrades to `STALE` after `freshness_seconds` (default one
+  day).
+- A definitive contradiction makes it `INVALIDATED`.
+- An error (timeout, rate limit, 5xx, unknown kind) makes it `UNVERIFIED`, or `STALE` if it held
+  fresh evidence — never `INVALIDATED`.
+- `DROPPED` is deliberately not `VALID`: retiring an assumption unblocks dependent decisions but
+  records no pass verdict.
+
+Only a decision that depends on an `INVALIDATED` assumption is marked `blocked`, and only in the
+session that recorded it. Full detail: docs/VERIFICATION_AND_SAFETY.md.
+
+## Security boundaries
+
+- No network access of its own; the only outbound traffic is the HTTP checks the user records.
+- No credentials; `requires_env: []`.
+- HTTP checks implement SSRF protection: only `http`/`https`; loopback, RFC1918, CGNAT, link-local,
+  unique-local and reserved ranges refused; cloud-metadata endpoints refused even when
+  `allow_private_urls` is true; every redirect hop re-screened; DNS failure fails closed.
+- Command execution (`command_succeeds`) is disabled by default and needs a user-configured
+  `command_allowlist`. Only a bare executable name runs (a path is refused); it is resolved to an
+  absolute path on the child's minimal `PATH`. The allowlist restricts which program runs, not the
+  safety of the model-chosen arguments.
+- Git checks protect against repository-controlled execution: every git invocation runs with
+  `-c core.fsmonitor=false -c core.hooksPath=/dev/null` and a minimal environment, and `git status`
+  adds `--no-optional-locks`, so a checked-out repository cannot execute code through git config.
+- All state is local SQLite under `HERMES_HOME/plugin-data/assumption-ledger/`. It is unencrypted
+  and has no integrity protection.
+
+Full detail: docs/SECURITY.md.
+
+## Configuration
+
+Five options, all read at runtime via `PluginContext.get_config`:
+
+- `freshness_seconds` (int, 86400) — `VALID` -> `STALE` window.
+- `auto_check` (bool, false) — verify on record/capture.
+- `max_reinject` (int, 25) — live assumptions re-injected per turn.
+- `command_allowlist` (list, []) — executables `command_succeeds` may run.
+- `allow_private_urls` (bool, false) — permit HTTP checks to private/loopback hosts.
+
+Full detail: docs/CONFIGURATION.md.
+
+## Compatibility
+
+- Hermes Agent >= 0.23.0
+- Python >= 3.11
+- Runtime dependencies: none
+- Required credentials: none
+- Platforms: [] (declared; not platform-restricted)
+- Registered: 6 tools, 4 hooks, 1 slash command
+
+## Testing evidence
+
+- Test suite: 307 passed, 1 skipped (the skip is the live-core comparison in
+  `tests/test_core_parity.py`, which runs only inside a Hermes checkout). No network access.
+- Non-vacuity: `scripts/nonvacuous_check.py` reverts each hardening change in turn and requires the
+  focused suites to fail; all 20 reverts are caught.
+- Hermes-level: `hermes plugins validate` passes 15/15 checks with zero warnings;
+  `hermes plugins doctor` reports 6 tools and 4 hooks.
+- Version consistency: `tests/test_config.py::test_versions_agree_everywhere`.
+
+Reproduce: `python -m pytest -q`. Full detail: docs/TESTING.md.
+
+## Known limitations
+
+- `CheckContext.cwd` is accepted but not read; use the check spec's `cwd`.
+- No git tags or releases; the catalog pins a commit SHA. The default branch (`main`) still reports
+  0.2.0 — the catalog pin, not `main`, is the reviewed code.
+- No CI: there is no `.github/workflows/`; the suite is run locally.
+- No unstated-assumption detection: if the agent never states the belief, it cannot be captured.
+- `unsupported` checks stay `UNVERIFIED` forever by design.
+- The `pre_verify` gate raises cost; it does not enforce. An agent that never calls
+  `assumption_decide` is never held.
+- The database is unencrypted and has no integrity protection.
+- Absolute paths in a check spec bypass the workspace root.
+
+Full detail: CHANGELOG.md#known-issues and docs/SECURITY.md.
+
+## Primary documentation
+
+- README: https://github.com/itzebe/hermes-assumption-ledger#readme
+- Verification and safety: docs/VERIFICATION_AND_SAFETY.md
+- Installation: docs/INSTALLATION.md
+- Architecture: docs/ARCHITECTURE.md
+- API reference: docs/API_REFERENCE.md
+- Configuration: docs/CONFIGURATION.md
+- Security: docs/SECURITY.md
+- Testing: docs/TESTING.md
+- Troubleshooting: docs/TROUBLESHOOTING.md
+- Changelog and known issues: CHANGELOG.md
+- Discovery surfaces and how to verify them: docs/AI_DISCOVERY.md
