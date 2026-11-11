@@ -131,13 +131,14 @@ relied on in session A does not touch session B.
 by default, so a build artifact, a log or the ledger's own database cannot invalidate the
 assumption. Pass `include_untracked: true` when untracked files genuinely matter.
 
-The git checks do not let a repository choose a program to run through `core.fsmonitor` or
-`core.hooksPath`. Every `git` invocation is started with `-c core.fsmonitor=false -c
-core.hooksPath=/dev/null` (a command-line `-c` beats the repository's own configuration) and the
-minimal environment, and `git status` adds `--no-optional-locks`, so the host environment is not
-visible to git or to anything it spawns. One vector remains by design: a `clean`/`smudge` filter
-driver set in that repository's own `.git/config` still applies to `git status`, so point git checks
-only at repositories whose local git config you trust. See
+The git checks reduce, but do not eliminate, repository-controlled execution. Every `git` invocation
+disables `core.fsmonitor` and overrides `core.hooksPath` on the command line (`-c
+core.fsmonitor=false -c core.hooksPath=/dev/null` — a command-line `-c` beats the repository's own
+configuration) and receives the minimal environment, and `git status` adds `--no-optional-locks`, so
+the host environment is not visible to git or to anything it spawns. One vector remains: a
+`clean`/`smudge` filter driver set in that repository's own `.git/config` still executes during `git
+status`, because git runs it before those overrides apply. Point git checks only at repositories
+whose local git config you trust — git checks are not a complete sandbox. See
 [docs/SECURITY.md](docs/SECURITY.md#git-checks-and-repository-controlled-execution).
 
 ## Install

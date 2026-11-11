@@ -163,11 +163,14 @@ was committed. Counting it would invalidate 'the tree is clean' for reasons unre
 assumption." Untracked files are always returned in `observed.untracked` so they are visible in
 the evidence, but they only affect the verdict when the spec sets `include_untracked: true`.
 
-**The git checks cannot be steered into running a program.** Each `git` invocation is started with
-`-c core.fsmonitor=false -c core.hooksPath=/dev/null` and the minimal environment, and `git status`
-adds `--no-optional-locks`. A repository the agent merely checked out cannot therefore use its own
-configuration to have git execute a `core.fsmonitor` program or a hooks-directory program during a
-verification, and no host environment variable reaches git. See
+**The git checks disable the two configuration-driven execution vectors, but are not a sandbox.**
+Each `git` invocation is started with `-c core.fsmonitor=false -c core.hooksPath=/dev/null` and the
+minimal environment, and `git status` adds `--no-optional-locks`. A repository the agent merely
+checked out therefore cannot use its own configuration to have git execute a `core.fsmonitor`
+program or a hooks-directory program during a verification, and no host environment variable reaches
+git. One vector remains: a `clean`/`smudge` **filter driver** set in that repository's local
+`.git/config` still runs during `git status`, because git runs it before those overrides apply, so
+point git checks only at repositories whose local git configuration you trust. See
 [SECURITY.md](SECURITY.md#git-checks-and-repository-controlled-execution).
 
 **`env_set` never echoes the value.** When a variable differs from `equals`, the detail is
@@ -443,7 +446,7 @@ Being explicit about the limits matters more than the marketing.
   honestly labelled.
 - **Its `command_succeeds` check runs whatever the spec says.** It is documented as a read-only
   probe, but the plugin does not enforce that. See
-  [SECURITY.md](SECURITY.md#command_succeeds-runs-an-arbitrary-argv).
+  [SECURITY.md](SECURITY.md#command-execution-policy).
 - **It does not guarantee a turn is stopped.** Hermes caps verify-gate nudges; a determined agent
   can still act. The gate raises the cost of ignoring a contradiction; it does not make it
   impossible.

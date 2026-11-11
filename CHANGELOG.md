@@ -71,9 +71,18 @@ fast-forwards `main`.
   and `assumption_drop` sections with real captured output.
 - `CHANGELOG.md` "known issues" and `CONTRIBUTING.md` now describe the state as of `0.2.2`, and the
   resolved-KI list no longer offers already-fixed issues (KI-1, KI-3) as open work.
-- **Git filter-driver limitation documented.** The maintainer's disclosure that a repository-local
-  `clean`/`smudge` filter driver still applies to `git status` is now stated in `docs/SECURITY.md`
-  and the README's git-check note.
+- **Git filter-driver limitation documented consistently.** The maintainer's disclosure that a
+  repository-local `clean`/`smudge` filter driver still applies to `git status` is now stated in
+  `README.md`, `docs/SECURITY.md`, `docs/VERIFICATION_AND_SAFETY.md` and `llms.txt`. `llms.txt`
+  previously overstated the git guarantee as preventing repository-controlled execution; it now
+  states the `core.fsmonitor`/`core.hooksPath` overrides, the minimal environment and
+  `--no-optional-locks`, the remaining filter-driver vector, and that git checks are not a complete
+  sandbox.
+- **Four dangling documentation anchors fixed.** `docs/SECURITY.md` (`#known-security-limitations`),
+  `docs/USER_GUIDE.md` (`#when-the-plugin-blocks-a-turn`), `docs/VERIFICATION_AND_SAFETY.md`
+  (`#command_succeeds-runs-an-arbitrary-argv`) and `CONTRIBUTING.md` (KI-6) pointed at headings that
+  no longer exist. The KI-6 row was removed from the "open issues" table because KI-6 is recorded as
+  resolved in `0.2.0`.
 
 ## [0.2.2] — harden the git checks against repository-controlled execution
 
@@ -82,13 +91,16 @@ Responds to the third `CHANGES_REQUESTED` review on catalog PR #150212, which re
 
 ### Security
 
-- **The git checks no longer let a repository choose a program to run.** ``core.fsmonitor`` is git
-  configuration that names an executable git launches while computing ``status``, and
+- **The git checks no longer let a repository choose a program to run through ``core.fsmonitor`` or
+  ``core.hooksPath``.** ``core.fsmonitor`` is git configuration that names an executable git launches
+  while computing ``status``, and
   ``core.hooksPath`` can redirect hook lookup at an attacker-chosen directory. A repository the
   agent merely checked out could therefore execute code during what is meant to be a read-only
   verification. ``_run_git`` now prepends ``-c core.fsmonitor=false -c core.hooksPath=/dev/null`` to
   every git invocation; a command-line ``-c`` takes precedence over repository, worktree and global
-  configuration. ``git status`` also passes ``--no-optional-locks``.
+  configuration. ``git status`` also passes ``--no-optional-locks``. The separate ``clean``/``smudge``
+  filter-driver vector is not closed by these overrides and is documented as a residual limitation in
+  ``docs/SECURITY.md``.
 - **The git child no longer inherits the host environment.** ``_run_git`` passes
   ``env=minimal_env()`` (the same minimal environment ``command_succeeds`` uses), so host variables
   — API tokens, cloud credentials — are not visible to git or to any program git spawns.

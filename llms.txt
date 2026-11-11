@@ -143,9 +143,14 @@ session that recorded it. Full detail: docs/VERIFICATION_AND_SAFETY.md.
   `command_allowlist`. Only a bare executable name runs (a path is refused); it is resolved to an
   absolute path on the child's minimal `PATH`. The allowlist restricts which program runs, not the
   safety of the model-chosen arguments.
-- Git checks protect against repository-controlled execution: every git invocation runs with
-  `-c core.fsmonitor=false -c core.hooksPath=/dev/null` and a minimal environment, and `git status`
-  adds `--no-optional-locks`, so a checked-out repository cannot execute code through git config.
+- Git checks run in the model-chosen directory with a reduced, but not complete, protection against
+  repository-controlled execution: every git invocation disables `core.fsmonitor` and overrides
+  `core.hooksPath` on the command line (`-c core.fsmonitor=false -c core.hooksPath=/dev/null`),
+  receives a minimal environment, and `git status` adds `--no-optional-locks`. One vector remains: a
+  `clean`/`smudge` **filter driver** configured in the checked repository's local `.git/config` can
+  still execute during `git status`, because git runs it before those overrides apply. Point git
+  checks only at repositories whose local git configuration you trust. Git checks are therefore not
+  a complete sandbox.
 - All state is local SQLite under `HERMES_HOME/plugin-data/assumption-ledger/`. It is unencrypted
   and has no integrity protection.
 

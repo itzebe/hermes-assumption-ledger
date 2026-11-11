@@ -10,7 +10,7 @@ How to use Assumption Ledger day to day. This guide assumes it is already instal
 - [A complete worked example](#a-complete-worked-example)
 - [Reading the status view](#reading-the-status-view)
 - [Understanding the four statuses](#understanding-the-four-statuses)
-- [When the plugin blocks a turn](#when-the-plugin-blocks-a-turn)
+- [When the plugin warns you](#when-the-plugin-warns-you)
 - [Everyday recipes](#everyday-recipes)
 - [What to expect from re-injection](#what-to-expect-from-re-injection)
 - [Common mistakes](#common-mistakes)

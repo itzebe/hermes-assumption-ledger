@@ -15,7 +15,7 @@ running the code) from **design intentions** (what the design is trying to achie
 - [External LLM calls](#external-llm-calls)
 - [Credentials](#credentials)
 - [Permission boundaries](#permission-boundaries)
-- [Known security limitations](#known-security-limitations)
+- [Security controls and remaining limitations](#security-controls-and-remaining-limitations)
 - [Failure modes](#failure-modes)
 - [Reporting a vulnerability](#reporting-a-vulnerability)
 
@@ -318,8 +318,8 @@ close that:
   environment — API tokens, cloud credentials — is not visible to git or to any program git spawns;
 - the existing timeout, error handling and output limits are unchanged, and no shell is used.
 
-This raises the bar rather than removing the class. Two limits remain, and both are honest rather
-than theoretical:
+This reduces the risk rather than removing the class: the git checks are **not a complete
+sandbox**. Two limits remain, and both are honest rather than theoretical:
 
 - **Filter drivers still apply.** A `clean`/`smudge` filter driver set in that repository's own
   `.git/config` is still honoured by `git status`, because git runs it before our `-c` overrides can
