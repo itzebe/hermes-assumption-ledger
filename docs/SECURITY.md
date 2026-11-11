@@ -15,7 +15,7 @@ running the code) from **design intentions** (what the design is trying to achie
 - [External LLM calls](#external-llm-calls)
 - [Credentials](#credentials)
 - [Permission boundaries](#permission-boundaries)
-- [Known security limitations](#known-security-limitations)
+- [Security controls and remaining limitations](#security-controls-and-remaining-limitations)
 - [Failure modes](#failure-modes)
 - [Reporting a vulnerability](#reporting-a-vulnerability)
 
@@ -233,7 +233,7 @@ can run this plugin.
 | Run processes | `git` for git checks; the `argv` of a `command_succeeds` spec. |
 | Open databases | Read-only, on paths named in `db_*` specs. |
 | Open sockets | Only to URLs named in `http_*` specs. |
-| Register with Hermes | 4 hooks, 4 tools, 1 slash command. It does not register a context engine, a memory provider, an approval transport, a CLI command, or a platform action. |
+| Register with Hermes | 4 hooks, 6 tools, 1 slash command. It does not register a context engine, a memory provider, an approval transport, a CLI command, or a platform action. |
 
 **Verified** by the upstream validator: `declared tools: matches registrations`, `declared hooks:
 matches registrations`, `declared middleware: matches registrations`, `built-in tool collisions: no
@@ -281,7 +281,12 @@ command_allowlist: [git, node]
 
 When enabled, the policy is:
 
-- the executable's **basename** must appear in the allowlist (`git`, not `/usr/bin/git`);
+- `argv[0]` must be a **bare executable name**. A path — `/tmp/evil/git`, `./scripts/git`,
+  `C:\evil\git` — is **refused**, not reduced to its basename, so a path cannot be smuggled past
+  the name check;
+- the bare name must appear in the allowlist, and is resolved to an **absolute path** with
+  `shutil.which(name, path=minimal_env()["PATH"])`; resolution failure fails closed;
+- the **resolved absolute path** is executed, never the model-supplied string;
 - a check spec **cannot** widen the allowlist — the permitted set is read from plugin config only;
 - the process is started with `subprocess.run(argv, shell=False)`, so shell metacharacters are
   arguments, not syntax;
@@ -289,9 +294,38 @@ When enabled, the policy is:
   `LANG=C`), so a probe cannot read the host's credentials;
 - a missing binary, a policy refusal or a timeout is an `error`, never a `fail`.
 
-An allowed *name* is still resolved through `PATH`, so an attacker who can write an executable
-named `git` earlier on the path could be run. Keep the allowlist short and trustworthy, and keep
-`PATH` under your control.
+The allowlist constrains **which executable** runs, not what it does with the model-chosen
+arguments. A permitted `node` runs `node -e '<arbitrary code>'`; a permitted `git` can trigger a
+configured alias or an external `core.editor`/`core.pager`; permitting a shell or an interpreter is
+equivalent to permitting arbitrary execution. Keep the list short, prefer programs whose useful
+behaviour is read-only, and treat each entry as trusting that program to be driven by a model.
+
+### Git checks and repository-controlled execution
+
+`git_branch`, `git_commit` and `git_clean` run `git` in the directory named by the check. A
+repository's **own** configuration can name programs for git to run — `core.fsmonitor` names an
+executable git launches while computing `status`, and `core.hooksPath` can point hook lookup at an
+attacker-chosen directory. A repository the agent merely checked out could therefore execute code
+during what is meant to be a read-only verification, without any allowlist being configured. To
+close that:
+
+- every git invocation is started with `-c core.fsmonitor=false -c core.hooksPath=/dev/null`
+  prepended to the argument vector; a command-line `-c` takes precedence over repository, worktree
+  and global configuration;
+- `git status` also passes `--no-optional-locks`, so a read-only status check does not take the
+  optional index lock;
+- the git child is started with the **minimal environment** (`env=minimal_env()`), so the host
+  environment — API tokens, cloud credentials — is not visible to git or to any program git spawns;
+- the existing timeout, error handling and output limits are unchanged, and no shell is used.
+
+This reduces the risk rather than removing the class: the git checks are **not a complete
+sandbox**. Two limits remain, and both are honest rather than theoretical:
+
+- **Filter drivers still apply.** A `clean`/`smudge` filter driver set in that repository's own
+  `.git/config` is still honoured by `git status`, because git runs it before our `-c` overrides can
+  replace it. Point git checks only at repositories whose local git configuration you trust.
+- Git still runs in the repository's directory, and a check may still name any path the process can
+  read.
 
 ### HTTP checks and SSRF
 

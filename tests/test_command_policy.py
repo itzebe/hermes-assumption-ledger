@@ -5,6 +5,7 @@ environment is caught even if the verifier changes shape.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -14,10 +15,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ledger.command_policy import (  # noqa: E402
     MAX_ALLOWLIST_ENTRIES,
+    allowed_argv,
     executable_name,
     is_allowed,
     minimal_env,
     normalize_allowlist,
+    resolve_executable,
 )
 
 
@@ -71,14 +74,29 @@ def test_non_string_entries_ignored():
 
 
 # --- executable name -------------------------------------------------------------------------------
-def test_executable_name():
+def test_executable_name_is_bare_name_only():
     assert executable_name(["git", "status"]) == "git"
-    assert executable_name(["/usr/bin/git", "status"]) == "git"
-    assert executable_name(["./node"]) == "node"
+    assert executable_name(["git"]) == "git"
+    # A path is not a name: it is refused, not reduced to its basename.
+    assert executable_name(["/usr/bin/git", "status"]) is None
+    assert executable_name(["./node"]) is None
+    assert executable_name(["bin/git"]) is None
+    assert executable_name(["..\\git"]) is None
     assert executable_name([]) is None
     assert executable_name("git") is None
     assert executable_name([""]) is None
     assert executable_name([123]) is None
+
+
+def test_resolve_executable_uses_the_child_path(monkeypatch):
+    monkeypatch.setenv("PATH", "/nonexistent-dir-xyz")
+    assert resolve_executable("git", path="/nonexistent-dir-xyz") is None
+    # A path is never resolved as a name.
+    assert resolve_executable("/usr/bin/git") is None
+    assert resolve_executable("./git") is None
+    # A name that exists on the given path resolves to an absolute path.
+    resolved = resolve_executable("python3", path=os.environ.get("PATH", ""))
+    assert resolved is None or resolved.startswith("/")
 
 
 # --- the decision ---------------------------------------------------------------------------------
@@ -94,13 +112,60 @@ def test_denied_when_absent():
 
 
 def test_path_does_not_bypass_the_name_check():
-    """``/tmp/evil/git`` has basename ``git``; the path must not smuggle it past review."""
-    ok, _ = is_allowed(["/tmp/evil/git"], ("git",))
-    assert ok, "the basename matches, which is the documented contract"
+    """``/tmp/evil/git`` has basename ``git``; the path must be refused, not resolved.
 
-    ok2, reason = is_allowed(["/tmp/evil/other"], ("git",))
+    A path smuggled in ``argv[0]`` would execute an attacker-controlled file while the
+    allowlist check saw only ``git``.
+    """
+    ok, reason = is_allowed(["/tmp/evil/git"], ("git",))
+    assert not ok, "an absolute path must never satisfy the name allowlist"
+    assert "path" in reason or "bare" in reason
+
+    ok2, reason2 = is_allowed(["/tmp/evil/other"], ("git",))
     assert not ok2
-    assert "other" in reason
+
+
+@pytest.mark.parametrize("argv0", [
+    "./scripts/git",       # relative path
+    "../git",              # traversal
+    "sub/git",             # relative subdir
+    "C:\\evil\\git",       # windows path
+    "C:/evil/git",         # windows path, forward slashes
+    "/usr/bin/git",        # absolute path
+    "/tmp/evil/git",       # absolute path in a writable dir
+    "\\\\server\\share\\git",
+])
+def test_any_path_in_argv0_is_refused(argv0):
+    ok, _ = is_allowed([argv0, "status"], ("git",))
+    assert not ok, f"{argv0!r} must not be accepted because 'git' is allowlisted"
+
+
+def test_unresolved_executable_is_refused(monkeypatch):
+    """A name that is allowlisted but not found on the child PATH fails closed."""
+    monkeypatch.setenv("PATH", "/nonexistent-dir-xyz")
+    ok, reason = is_allowed(["definitely-not-a-real-binary-xyz"], ("definitely-not-a-real-binary-xyz",))
+    assert not ok
+    assert "resolve" in reason
+
+
+def test_allowed_argv_executes_the_resolved_absolute_path():
+    """The returned argv[0] is the resolved absolute path, never the model string."""
+    resolved, reason = allowed_argv(["git", "status"], ("git",))
+    assert resolved is not None, reason
+    assert resolved[0] != "git"
+    assert resolved[0].startswith("/")
+    assert resolved[1:] == ["status"]
+
+
+def test_allowed_argv_refuses_a_path():
+    resolved, _ = allowed_argv(["/tmp/evil/git"], ("git",))
+    assert resolved is None
+
+
+def test_allowed_argv_refuses_an_unresolved_name(monkeypatch):
+    monkeypatch.setenv("PATH", "/nonexistent-dir-xyz")
+    resolved, _ = allowed_argv(["git"], ("git",))
+    assert resolved is None
 
 
 def test_malformed_argv_denied():

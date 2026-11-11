@@ -5,6 +5,7 @@ that the lifecycle rules depend on: a timeout, a rate limit and a 5xx must all b
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from ledger.command_policy import minimal_env  # noqa: E402
 from ledger.model import ERROR, FAIL, PASS  # noqa: E402
 from ledger.verifiers import CheckContext, run_check  # noqa: E402
 
@@ -103,6 +105,126 @@ def test_git_outside_repo_is_error(tmp_path):
     assert run_check({"kind": "git_clean"}, _ctx(tmp_path)).verdict == ERROR
 
 
+# --- git: repository configuration must not execute code --------------------------------------
+def _init_git_repo(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+
+    def run(*args):
+        subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
+
+    run("init", "-q")
+    run("config", "user.email", "t@t.t")
+    run("config", "user.name", "t")
+    (path / "f.txt").write_text("1")
+    run("add", ".")
+    run("commit", "-qm", "first")
+    return path
+
+
+def _set_fsmonitor_program(repo: Path, body: str) -> Path:
+    """Point the repository's ``core.fsmonitor`` at a program we control.
+
+    ``core.fsmonitor`` names an executable git launches during ``status``, so a checked-out
+    repository can choose code to run. The program is written outside the repo by the caller so its
+    side effects are observable without dirtying the tree under test.
+    """
+    program = repo / "fsmonitor.sh"
+    program.write_text(body)
+    program.chmod(0o755)
+    subprocess.run(
+        ["git", "config", "core.fsmonitor", str(program)], cwd=repo, check=True, capture_output=True
+    )
+    return program
+
+
+def test_git_status_does_not_run_repository_fsmonitor(tmp_path):
+    """A repository's own ``core.fsmonitor`` program must never run during a git check.
+
+    ``core.fsmonitor`` is git configuration that names a program git executes while computing
+    ``status``. A repository the agent merely checked out can set it, so without the
+    ``-c core.fsmonitor=false`` override the repository, not the user, would pick a program to run
+    during what is meant to be a read-only verification.
+    """
+    marker = tmp_path / "fsmonitor-ran.txt"
+    repo = _init_git_repo(tmp_path / "repo")
+    _set_fsmonitor_program(repo, f'#!/bin/sh\necho ran >> "{marker}"\necho 1\n')
+
+    result = run_check({"kind": "git_clean"}, _ctx(repo))
+    assert result.verdict == PASS, result.detail
+    assert not marker.exists(), "the repository-configured fsmonitor program must not execute"
+
+
+def test_git_status_fsmonitor_guard_is_load_bearing(tmp_path, monkeypatch):
+    """The fsmonitor override is what prevents execution, not an accident of the environment.
+
+    The same repository is checked with the override removed; the program then runs. If this ever
+    stops being true, the test above would pass for the wrong reason, so the two are paired.
+    """
+    marker = tmp_path / "fsmonitor-ran.txt"
+    repo = _init_git_repo(tmp_path / "repo")
+    _set_fsmonitor_program(repo, f'#!/bin/sh\necho ran >> "{marker}"\necho 1\n')
+
+    import ledger.verifiers as verifiers
+
+    monkeypatch.setattr(verifiers, "_GIT_CONFIG_OVERRIDES", ())
+    result = run_check({"kind": "git_clean"}, _ctx(repo))
+    assert result.verdict == PASS, result.detail
+    assert marker.exists(), "with the override removed git is expected to run the configured program"
+
+
+def test_git_child_environment_is_isolated_from_the_host(git_repo, monkeypatch):
+    """The git child is started with the minimal environment, never the host environment.
+
+    The runner observes the real invocation: it records the ``env`` it is handed and then starts the
+    actual git process with it, so the assertion is about the environment the child receives rather
+    than a mock that never runs.
+    """
+    monkeypatch.setenv("LEDGER_SECRET_CANARY", "leaked")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "leaked-too")
+    recorded = {}
+
+    def observing_runner(argv, **kwargs):
+        recorded["env"] = kwargs.get("env")
+        recorded["argv"] = argv
+        return subprocess.run(argv, **kwargs)
+
+    assert run_check({"kind": "git_clean"}, _ctx(git_repo, runner=observing_runner)).verdict == PASS
+    child_env = recorded["env"]
+    assert child_env == minimal_env()
+    assert "LEDGER_SECRET_CANARY" not in child_env
+    assert "AWS_SECRET_ACCESS_KEY" not in child_env
+
+
+def test_git_child_environment_seen_by_spawned_program(tmp_path, monkeypatch):
+    """A program git itself spawns sees the minimal environment, with no host variable in it.
+
+    This inspects the child environment from the child's own side: the repository-configured
+    ``core.fsmonitor`` program is executed by the git child and dumps its environment to a file.
+    """
+    observed = tmp_path / "child-env.txt"
+    repo = _init_git_repo(tmp_path / "repo")
+    _set_fsmonitor_program(repo, f'#!/bin/sh\nenv > "{observed}"\necho 1\n')
+
+    monkeypatch.setenv("LEDGER_SECRET_CANARY", "leaked")
+    import ledger.verifiers as verifiers
+
+    # Run the program to sample the git child's environment (the override is restored afterwards).
+    monkeypatch.setattr(verifiers, "_GIT_CONFIG_OVERRIDES", ())
+    assert run_check({"kind": "git_clean"}, _ctx(repo)).verdict == PASS
+    assert observed.exists(), "the observation program did not run; isolation cannot be asserted"
+
+    child_env = dict(
+        line.split("=", 1) for line in observed.read_text().splitlines() if "=" in line
+    )
+    assert "LEDGER_SECRET_CANARY" not in child_env
+    expected = minimal_env()
+    # git prepends its own exec-path (``/usr/lib/git-core``) to PATH for programs it spawns, so the
+    # child PATH is the minimal PATH with that prefix; nothing from the host environment is added.
+    assert expected["PATH"] in child_env.get("PATH", "")
+    assert child_env.get("HOME") == ""
+    assert child_env.get("TMPDIR") == ""
+
+
 # --- env --------------------------------------------------------------------------------------
 def test_env_set(tmp_path):
     ctx = _ctx(tmp_path, env={"PRESENT": "1"})
@@ -139,6 +261,36 @@ def test_command_path_is_not_basename_matched(tmp_path):
     """A model-supplied path must not smuggle in an executable whose basename is allowed."""
     ctx = _ctx(tmp_path, command_allowlist=("git",))
     r = run_check({"kind": "command_succeeds", "argv": ["/tmp/evil/git", "status"]}, ctx)
+    assert r.verdict == ERROR
+    assert "path" in r.detail or "bare" in r.detail
+
+
+def test_command_relative_path_is_refused(tmp_path):
+    ctx = _ctx(tmp_path, command_allowlist=("git",))
+    r = run_check({"kind": "command_succeeds", "argv": ["./scripts/git", "status"]}, ctx)
+    assert r.verdict == ERROR
+
+
+def test_command_runs_the_resolved_absolute_path(tmp_path, monkeypatch):
+    """The executed program is the resolver's absolute path, not the model string."""
+    seen = {}
+
+    def runner(argv, **kw):
+        seen["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    ctx = _ctx(tmp_path, command_allowlist=("true",), runner=runner)
+    r = run_check({"kind": "command_succeeds", "argv": ["true"]}, ctx)
+    assert r.verdict == PASS
+    assert seen["argv"][0] != "true"
+    assert seen["argv"][0].startswith("/")
+
+
+def test_command_unresolved_binary_is_error(tmp_path, monkeypatch):
+    """An allowlisted name that is not on the child PATH fails closed."""
+    monkeypatch.setenv("PATH", "/nonexistent-dir-xyz")
+    ctx = _ctx(tmp_path, command_allowlist=("git",))
+    r = run_check({"kind": "command_succeeds", "argv": ["git", "status"]}, ctx)
     assert r.verdict == ERROR
 
 

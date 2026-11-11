@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.2.0"
+__version__ = "0.2.2"
 
 _HOOKS = ("pre_llm_call", "post_llm_call", "pre_verify")
 _TOOLSET = "assumption_ledger"
@@ -95,7 +95,7 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
 
 def resolve_config() -> Dict[str, Any]:
     """The effective, validated configuration. Exposed for tests and for ``/assumptions config``."""
-    from ledger.command_policy import normalize_allowlist
+    from .ledger.command_policy import normalize_allowlist
 
     raw = _plugin_config()
     return {
@@ -144,7 +144,7 @@ class LedgerHost:
         if self._error:
             return None
         try:
-            from ledger import CheckContext, LedgerEngine, LedgerStore
+            from .ledger import CheckContext, LedgerEngine, LedgerStore
         except Exception as exc:  # pragma: no cover - only when the package is absent
             self._error = f"ledger package unavailable: {exc}"
             logger.warning("Assumption Ledger: %s", self._error)
@@ -191,7 +191,7 @@ def _data_dir() -> Path:
 
 def _check_context(cfg: Optional[Dict[str, Any]] = None):
     """Build the check context, applying the configured command and URL policies."""
-    from ledger import CheckContext
+    from .ledger import CheckContext
 
     cfg = cfg or {}
     try:
@@ -254,7 +254,7 @@ def on_pre_llm_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
                 "/assumptions resolve <id> (re-check), or /assumptions drop <id> (retire)."
             )
             parts.append("\n".join(lines))
-        block = engine.render_reinjection()
+        block = engine.render_reinjection(session_id=session_id)
         if block:
             parts.append(block)
         if parts:

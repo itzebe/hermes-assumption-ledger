@@ -53,9 +53,9 @@ hermes plugins doctor .
 │   └── store.py           # SQLite persistence.
 ├── tests/
 │   ├── test_frozen_oracles.py     # The contract. 17 tests.
-│   ├── test_verifiers.py          # The checks. 20 tests.
+│   ├── test_verifiers.py          # The checks. 30 tests.
 │   ├── test_engine.py             # Engine behaviour. 14 tests.
-│   ├── test_plugin_integration.py # The adapter. 10 tests.
+│   ├── test_plugin_integration.py # The adapter. 12 tests.
 │   └── test_extractor.py          # Extraction precision. 12 tests.
 ├── docs/                  # User and developer documentation.
 ├── CHANGELOG.md
@@ -70,7 +70,7 @@ worth protecting.
 ## Running the tests
 
 ```bash
-python -m pytest -q                    # 73 passed, ~1s
+python -m pytest -q                    # 303 passed, ~2s
 python -m pytest -x                    # stop at first failure
 python -m pytest tests/test_frozen_oracles.py -v
 ```
@@ -187,12 +187,12 @@ code.
 
 1. Read [docs/VERIFICATION_AND_SAFETY.md](docs/VERIFICATION_AND_SAFETY.md#the-critical-invariant)
    first. It documents the rule and its rationale.
-2. Run the full suite. Expect all 73 to pass.
+2. Run the full suite. Expect all 303 to pass (1 skipped on a bare checkout).
 3. **Verify your change is actually tested.** Revert it and confirm a test fails. A test that
    passes both before and after proves nothing. The two known regressions are recorded in
    [docs/TESTING.md](docs/TESTING.md#verifying-a-test-is-non-vacuous):
-   - Removing the `INVALIDATED` guard → **1 failed, 72 passed**.
-   - Mapping `error` to `INVALIDATED` → **5 failed, 68 passed**.
+   - Removing the `INVALIDATED` guard → **2 failed, 301 passed**.
+   - Mapping `error` to `INVALIDATED` → **15 failed, 288 passed**.
 
    If your change is not caught by either, you need a new test.
 4. If the change alters the contract, say so explicitly in the PR and add a `CHANGELOG.md` entry
@@ -223,9 +223,9 @@ message or the pull request description.
 
 1. Branch from `main`. Do not commit to `main` directly.
 2. Keep the change focused. A bug fix and a refactor are two pull requests.
-3. Run the suite: `python -m pytest -q`. It must be **73 passed** (plus whatever you add).
+3. Run the suite: `python -m pytest -q`. It must be **303 passed, 1 skipped** (plus whatever you add).
 4. Run the validator if you have Hermes: `hermes plugins validate .` — 15/15, zero warnings.
-5. If you changed the manifest, confirm `hermes plugins doctor .` still reports **4 tools, 4 hooks**
+5. If you changed the manifest, confirm `hermes plugins doctor .` still reports **6 tools, 4 hooks**
    (or the new correct count).
 6. Update the docs and `CHANGELOG.md` if behaviour changed.
 7. Open a pull request describing what changed and why. Include the test output.
@@ -240,12 +240,9 @@ These are real, documented, and open. Each is recorded in
 
 | Issue | Difficulty | Note |
 | --- | --- | --- |
-| [KI-1](CHANGELOG.md#ki-1-declared-configuration-options-are-never-read) — config options never read | Medium | Wire `ctx.get_config` into `LedgerHost`. Changes behaviour, so it needs a discussion and a changelog entry. |
 | [KI-2](CHANGELOG.md#ki-2-checkcontextcwd-is-accepted-but-never-read) — `CheckContext.cwd` unused | Low | Either use it as the default for spec `cwd`, or remove the parameter. Either is a behaviour change. |
-| [KI-3](CHANGELOG.md#ki-3-inconsistent-version-string) — version mismatch | Trivial | Make `__init__.py` read `ledger.__version__` rather than restating it. |
-| [KI-4](CHANGELOG.md#ki-4-no-git-tags-or-releases) — no tags | Trivial | Tag `v0.1.1` at the pinned commit. |
+| [KI-4](CHANGELOG.md#ki-4-no-git-tags-or-releases) — no tags | Trivial | Tag `v0.2.2` at the pinned commit. |
 | [KI-5](CHANGELOG.md#ki-5-no-continuous-integration) — no CI | Low | Add the workflow sketched in `docs/TESTING.md`. High value: nothing currently enforces the suite. |
-| [KI-6](CHANGELOG.md#ki-6-db_row_count-interpolates-the-where-clause-into-sql) — `where` interpolation | Medium | Parameterising is hard for an arbitrary predicate. At minimum, validate or document more strictly. |
 | [KI-9](CHANGELOG.md#ki-9-the-database-is-unencrypted-and-has-no-integrity-protection) — no encryption | Hard | Out of scope for a stdlib-only plugin, but a documented threat model is not. |
 | Coverage gaps | Varies | [docs/TESTING.md](docs/TESTING.md#coverage-gaps) lists the untested paths: real HTTP, concurrency, large ledgers, WAL fallback, corruption. |
 

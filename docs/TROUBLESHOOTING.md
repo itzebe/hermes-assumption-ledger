@@ -69,7 +69,7 @@ hermes plugins doctor <path-to-plugin>
 Expected:
 
 ```
-manifest: assumption-ledger 0.2.0 (standalone)
+manifest: assumption-ledger 0.2.2 (standalone)
 OK: runtime discovery, manifest parsing, import, and registration passed
 registrations: 6 tool(s), 4 hook(s)
 ```
@@ -90,7 +90,7 @@ cd <path-to-plugin>
 python -c "import ledger; print(ledger.__version__)"
 ```
 
-Expected: `0.2.0`.
+Expected: `0.2.2`.
 
 If that fails, the plugin directory is incomplete or is not on the path the way Hermes loads it. A
 tool call will show the reason:
@@ -335,8 +335,8 @@ but differ in the evidence trail.
 
 ### Aged out
 
-The evidence is older than `freshness_seconds` (86400, i.e. one day, and not configurable — see
-[CONFIGURATION.md](CONFIGURATION.md#declared-configuration-options-are-not-currently-read-at-runtime)).
+The evidence is older than `freshness_seconds` (default 86400, i.e. one day — configurable, see
+[CONFIGURATION.md](CONFIGURATION.md#declared-configuration-options)).
 `sweep_stale()` degrades it, which happens when `summary()` or `on_pre_verify` runs. The evidence
 row explains the window.
 
@@ -439,7 +439,7 @@ hermes plugins list --enabled
 # Is the plugin structurally valid? (15 checks, expect all pass)
 hermes plugins validate <path-to-plugin>
 
-# Does it load and register? (expect 4 tools, 4 hooks)
+# Does it load and register? (expect 6 tools, 4 hooks)
 hermes plugins doctor <path-to-plugin>
 
 # What capabilities were declared vs granted?
@@ -483,7 +483,7 @@ If the diagnostics above do not explain the behaviour, gather this before report
 4. The `/assumptions` output.
 5. The `/assumptions show <id>` output for the record in question — this is the most useful item,
    because it contains the check spec, the resolved values, and the evidence trail.
-6. The plugin version (`0.2.0`) and the Hermes version.
+6. The plugin version (`0.2.2`) and the Hermes version.
 
 **Redact before posting.** The detail view can contain filesystem paths, and provenance can contain
 up to 500 characters of the sentence an assumption came from. Remove anything sensitive. Never

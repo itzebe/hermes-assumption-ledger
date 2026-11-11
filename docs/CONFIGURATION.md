@@ -112,9 +112,16 @@ anything.
 | | `cwd` | string | no | Default `"."`. |
 | | `timeout` | number | no | Defaults to `ctx.default_timeout`. |
 
-The executable's basename must appear in `command_allowlist`, or the check returns `error`. A check
+The executable's **bare name** must appear in `command_allowlist`, or the check returns `error`. A
+path in `argv[0]` (`/tmp/evil/git`, `./scripts/git`) is refused rather than reduced to its basename,
+and the bare name is resolved to an absolute path on the child's `PATH` before it runs. A check
 spec cannot add to the allowlist. The child process gets a minimal environment (`PATH`, empty
 `HOME`, empty `TMPDIR`, `LC_ALL=C`, `LANG=C`), so a tool cannot read the host's credentials.
+
+The allowlist restricts *which* executable may run, not what that executable will do with the
+arguments the model supplies. An allowed `node` still runs `node -e '<code>'`, and an allowed `git`
+can still invoke a configured alias or an external `core.editor`. Treat the list as a name filter,
+not a sandbox.
 
 Exit code 0 is a `pass`; any non-zero exit is a `fail`. A missing binary, a policy refusal or a
 timeout is an `error`. See [SECURITY.md](SECURITY.md#command-execution-policy).
@@ -241,8 +248,9 @@ There are effectively **two** layers, not a general precedence chain:
    omits. When embedded, the caller sets them; under Hermes, the adapter resolves `root`/`cwd` from
    the agent's working directory.
 
-Plugin settings under `plugins.entries.<plugin-id>.settings` are **not** a layer, because nothing
-reads them (see [above](#declared-configuration-options-are-not-currently-read-at-runtime)).
+Plugin settings under `plugins.entries.<plugin-id>.settings` are read once at first use through
+`PluginContext.get_config` (see [How the values are read](#how-the-values-are-read)) and cached on
+the host; they are not re-read per check.
 
 For direct embedding, precedence is simply: explicit `CheckContext` argument, else the built-in
 default in `CheckContext.__init__`.

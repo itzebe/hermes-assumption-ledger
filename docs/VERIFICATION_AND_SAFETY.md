@@ -163,6 +163,16 @@ was committed. Counting it would invalidate 'the tree is clean' for reasons unre
 assumption." Untracked files are always returned in `observed.untracked` so they are visible in
 the evidence, but they only affect the verdict when the spec sets `include_untracked: true`.
 
+**The git checks disable the two configuration-driven execution vectors, but are not a sandbox.**
+Each `git` invocation is started with `-c core.fsmonitor=false -c core.hooksPath=/dev/null` and the
+minimal environment, and `git status` adds `--no-optional-locks`. A repository the agent merely
+checked out therefore cannot use its own configuration to have git execute a `core.fsmonitor`
+program or a hooks-directory program during a verification, and no host environment variable reaches
+git. One vector remains: a `clean`/`smudge` **filter driver** set in that repository's local
+`.git/config` still runs during `git status`, because git runs it before those overrides apply, so
+point git checks only at repositories whose local git configuration you trust. See
+[SECURITY.md](SECURITY.md#git-checks-and-repository-controlled-execution).
+
 **`env_set` never echoes the value.** When a variable differs from `equals`, the detail is
 `"environment variable differs from expected"` with only the variable name in `observed`. The
 value is not recorded, because it may be a secret.
@@ -390,25 +400,26 @@ different numbers of tests.
 
 **Removing the `INVALIDATED` guard** — deleting the
 `if previous_status == INVALIDATED: return INVALIDATED` branch, so a failed re-check degrades a
-contradiction to `STALE` — makes **exactly one** test fail:
+contradiction to `STALE` — makes **two** tests fail:
 
 ```
 tests/test_frozen_oracles.py::test_transient_error_does_not_soften_a_contradiction
   AssertionError: a transient error must not soften a contradiction
   assert 'STALE' == 'INVALIDATED'
+tests/test_recovery.py::test_drop_is_not_resurrected_by_an_error_recheck
 
-1 failed, 72 passed
+2 failed, 305 passed
 ```
 
-**Mapping `error` to `INVALIDATED`** (the naive rule) fails five:
+**Mapping `error` to `INVALIDATED`** (the naive rule) fails fourteen:
 
 ```
-5 failed, 68 passed
+14 failed, 293 passed
 ```
 
 Two observations worth carrying forward:
 
-- **The protection is real but narrow.** One test guards the invariant against the outage case.
+- **The protection is real but narrow.** Two tests guard the invariant against the outage case.
   That is sufficient to detect a regression, but it means a reviewer changing the lifecycle rule
   must run the suite rather than reasoning about the change in isolation.
 - **`test_uncertainty_never_invalidates` does *not* catch the guard regression.** It starts from
@@ -435,7 +446,7 @@ Being explicit about the limits matters more than the marketing.
   honestly labelled.
 - **Its `command_succeeds` check runs whatever the spec says.** It is documented as a read-only
   probe, but the plugin does not enforce that. See
-  [SECURITY.md](SECURITY.md#command_succeeds-runs-an-arbitrary-argv).
+  [SECURITY.md](SECURITY.md#command-execution-policy).
 - **It does not guarantee a turn is stopped.** Hermes caps verify-gate nudges; a determined agent
   can still act. The gate raises the cost of ignoring a contradiction; it does not make it
   impossible.

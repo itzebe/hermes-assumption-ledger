@@ -19,8 +19,11 @@ sys.path.insert(0, str(ROOT))
 @pytest.fixture()
 def plugin(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    spec = importlib.util.spec_from_file_location("alp_config", ROOT / "__init__.py")
+    spec = importlib.util.spec_from_file_location(
+        "alp_config", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)]
+    )
     mod = importlib.util.module_from_spec(spec)
+    sys.modules["alp_config"] = mod
     spec.loader.exec_module(mod)
     mod._HOST = mod.LedgerHost()
     mod._CONFIG_GETTER[0] = None
@@ -270,7 +273,7 @@ def test_versions_agree_everywhere():
         "ledger/__init__.py": re.search(r'^__version__\s*=\s*"([^"]+)"', pkg, re.MULTILINE).group(1),
     }
     assert len(set(versions.values())) == 1, f"version strings disagree: {versions}"
-    assert versions["plugin.yaml"] == "0.2.0"
+    assert versions["plugin.yaml"] == "0.2.2"
 
 
 def test_manifest_tools_and_hooks_match_registration(plugin):

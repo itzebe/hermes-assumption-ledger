@@ -1,16 +1,42 @@
 # Assumption Ledger
 
-A persistent operational-assumption ledger for Hermes Agent.
+A persistent operational-assumption ledger for Hermes Agent: it captures the assumptions an agent
+states in its own messages, keeps the sentence each came from as provenance, verifies them with
+deterministic checks, and warns when work recorded in a session depends on an assumption that
+evidence has contradicted.
 
-An agent silently builds on things it has not checked: a file it believes exists, a branch it
-believes it is on, a deployment it believes is live, a table it believes has rows. When one of
-those beliefs is wrong, the failure surfaces much later and somewhere else. Assumption Ledger
-captures those beliefs as first-class records, keeps their provenance, verifies them with
-deterministic checks, and stops only the work that actually depends on a belief that has been
-contradicted.
+**Who needs it.** Anyone running a long-lived Hermes agent that acts on the world — deploying,
+editing, migrating, calling APIs. The agent silently builds on things it has not checked: a file it
+believes exists, a branch it believes it is on, a deployment it believes is live, a table it
+believes has rows. When one of those beliefs is wrong, the failure surfaces much later and
+somewhere else.
 
-Everything is deterministic. No LLM call is made to extract or verify an assumption, so the
-plugin needs no provider credentials and cannot be argued into a verdict.
+**What it solves.** It turns those silent beliefs into first-class, inspectable records, each with a
+deterministic pass/fail check, so a contradiction is caught where the belief was stated rather than
+where it finally broke.
+
+**How it works.** A `post_llm_call` hook captures explicit markers (`ASSUMPTION:`, `ASSUME:`,
+`PRECONDITION:`) and a small set of anchored phrases from the assistant's **own message** — never
+from tool output — and keeps the sentence each came from. A deterministic checker — one of twelve
+kinds — returns exactly `pass`, `fail` or `error`. A `pre_llm_call` hook re-injects live assumptions
+and warns when a session's recorded decision depends on a contradicted one. Everything is stored in
+local SQLite under the plugin data directory.
+
+**What makes it different.** Zero LLM calls in extraction or verification (no provider credentials,
+and no prompt-injection surface in verification); uncertainty never becomes invalidation (a
+timeout, 429 or 5xx yields `UNVERIFIED`, never `INVALIDATED`); provenance is retained;
+contradictions survive transient verification failures; decisions are dependency-aware and
+session-scoped; and recovery is always available through `resolve` or `drop`. It is an assumption
+*ledger*, not a generic memory store.
+
+**Install.** Requires Hermes Agent `>=0.23.0` and Python `>=3.11`; no third-party runtime
+dependencies.
+
+```bash
+hermes plugins install assumption-ledger --enable        # from the official Hermes catalog
+```
+
+See [Install](#install) for the repository-pinned alternative and its review caveat.
 
 - [What it does](#what-it-does)
 - [The one rule that matters](#the-one-rule-that-matters)
@@ -105,15 +131,37 @@ relied on in session A does not touch session B.
 by default, so a build artifact, a log or the ledger's own database cannot invalidate the
 assumption. Pass `include_untracked: true` when untracked files genuinely matter.
 
+The git checks reduce, but do not eliminate, repository-controlled execution. Every `git` invocation
+disables `core.fsmonitor` and overrides `core.hooksPath` on the command line (`-c
+core.fsmonitor=false -c core.hooksPath=/dev/null` — a command-line `-c` beats the repository's own
+configuration) and receives the minimal environment, and `git status` adds `--no-optional-locks`, so
+the host environment is not visible to git or to anything it spawns. One vector remains: a
+`clean`/`smudge` filter driver set in that repository's own `.git/config` still executes during `git
+status`, because git runs it before those overrides apply. Point git checks only at repositories
+whose local git config you trust — git checks are not a complete sandbox. See
+[docs/SECURITY.md](docs/SECURITY.md#git-checks-and-repository-controlled-execution).
+
 ## Install
 
 Requires Hermes Agent `>=0.23.0` and Python `>=3.11`. **No third-party runtime dependencies.**
+
+Assumption Ledger is in the **official Hermes plugin catalog** (merged
+[#150212](https://github.com/NousResearch/hermes-agent/pull/150212)). Install it by its catalog
+name — this resolves the reviewed entry and installs the pinned commit:
+
+```bash
+hermes plugins install assumption-ledger --enable
+```
+
+The `owner/repo` form also works, but it clones the repository's **default branch** rather than the
+reviewed pin, and Hermes treats it as an **unreviewed custom source** — its install-time scan may
+refuse it:
 
 ```bash
 hermes plugins install itzebe/hermes-assumption-ledger --enable
 ```
 
-Then confirm it loaded. Expect **4 tools and 4 hooks**:
+Then confirm it loaded. Expect **6 tools and 4 hooks**:
 
 ```bash
 hermes plugins doctor .
@@ -121,18 +169,18 @@ hermes plugins doctor .
 
 ```
 Plugin Doctor: .
-  manifest: assumption-ledger 0.2.0 (standalone)
+  manifest: assumption-ledger 0.2.2 (standalone)
   OK: runtime discovery, manifest parsing, import, and registration passed
-  registrations: 4 tool(s), 4 hook(s)
+  registrations: 6 tool(s), 4 hook(s)
 ```
 
 Records are written to `<hermes home>/plugin-data/assumption-ledger/ledger.db`.
 
-> **Not yet in the official catalog.** The catalog entry is an open pull request
-> ([NousResearch/hermes-agent#150212](https://github.com/NousResearch/hermes-agent/pull/150212)),
-> not a merged listing. Use the `owner/repo` identifier shown above. The bare-name install
-> (`hermes plugins install assumption-ledger`) fails until that PR merges, because a bare name is
-> resolved only through the catalog.
+> **Catalog pin.** The catalog entry pins
+> `07bfaaaeb58fed1fa2d717f2c201e7bb17a61965` (v0.2.2). A catalog install is
+> catalog-cached, so a newly published version can take a short while to appear. The repository's
+> default branch (`main`) is still `v0.2.0`, so the two install methods are **not** equivalent —
+> the catalog pin carries the security fixes that `main` does not yet contain.
 
 Full instructions, including pinning a revision and removing the plugin, are in
 [docs/INSTALLATION.md](docs/INSTALLATION.md).
@@ -201,6 +249,8 @@ what happens when the provider goes down mid-incident.
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Diagnostic procedures for common symptoms. |
 | [CHANGELOG.md](CHANGELOG.md) | Release history and known issues. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup and conventions. |
+| [llms.txt](llms.txt) | A concise, machine-readable entry point for AI assistants and research tools. |
+| [docs/AI_DISCOVERY.md](docs/AI_DISCOVERY.md) | The repository's public discovery surfaces and how to verify them. |
 
 ## Configuration
 
@@ -212,7 +262,7 @@ are read at runtime through the sanctioned `PluginContext.get_config` seam:
 | `freshness_seconds` | int | 86400 | How long a pass stays `VALID` before it goes `STALE`. Bounded to 1..31536000. |
 | `auto_check` | bool | false | Verify an assumption as soon as it is recorded, instead of leaving it `UNVERIFIED`. Off by default: it makes capture perform I/O. |
 | `max_reinject` | int | 25 | Maximum live assumptions re-injected per turn. Bounded to 1..200. |
-| `command_allowlist` | list | `[]` | Executable names `command_succeeds` may run, e.g. `[git, node]`. Empty disables command checks entirely. |
+| `command_allowlist` | list | `[]` | Executable names `command_succeeds` may run, e.g. `[git, node]`. Empty disables command checks entirely. The allowlist restricts *which* program may run, not the safety of the arguments the model passes it — read the security note below before enabling it. |
 | `allow_private_urls` | bool | false | Permit HTTP checks to reach loopback, private, link-local and CGNAT hosts. Cloud-metadata endpoints stay blocked regardless. |
 
 A malformed value falls back to the default rather than disabling the plugin, and a config-backend
@@ -245,7 +295,9 @@ Documented in full across [docs/](docs/) and
 - **`CheckContext.cwd` is unused.** Git and command checks resolve their directory from the check
   spec's `cwd` against `CheckContext.root`. The context's own `cwd` field is accepted, stored, and
   never read — a nonexistent `cwd` produces identical results.
-- **No tags or releases.** `v0.2.0` exists only in the manifest; the catalog pins a commit SHA.
+- **No tags or releases.** `v0.2.2` exists only as a version string in the manifest and modules; the
+  catalog pins a commit SHA. The default branch (`main`) still reports `0.2.0` until the release
+  branch is merged — the catalog pin, not `main`, is the reviewed code.
 - **No CI.** There is no `.github/workflows/`; the suite is run locally.
 - **No unstated-assumption detection.** If the agent never states the belief, the plugin cannot
   capture it.
@@ -258,8 +310,18 @@ Documented in full across [docs/](docs/) and
   work — but it does mean a contradiction is not globally enforced.
 - **`command_succeeds` is off until you enable it.** Execution requires a non-empty
   `command_allowlist`; the child gets a minimal environment; a check spec cannot widen the list.
-  The allowlist matches the executable's basename, so an allowed name found anywhere on `PATH`
-  runs. Keep the list short and trustworthy.
+  `argv[0]` must be a **bare executable name** — a path such as `/tmp/evil/git` or `./scripts/git`
+  is refused, and the name is resolved to an absolute path on the child's own `PATH` before it is
+  run.
+- **The allowlist restricts the executable, not the arguments.** The model chooses the whole
+  `argv`, so an allowed program can still be asked to do something dangerous. Allowing `node`
+  permits `node -e '<arbitrary JavaScript>'`, which runs code with the child's environment and
+  filesystem access. Allowing `git` permits a command that triggers a configured **git alias** or
+  an external `core.editor`/`core.pager` helper — code you did not intend to run. Allowing a shell
+  or an interpreter (`sh`, `bash`, `python`, `perl`) is equivalent to allowing arbitrary execution.
+  The allowlist is a **name filter, not a sandbox**: treat every entry as "I trust this program to
+  be driven by a model", keep the list as short as the checks genuinely need, and prefer programs
+  whose only useful behaviour is to inspect state and exit.
 - **HTTP checks follow redirects only after re-validating each hop.** A redirect to a blocked
   destination is refused, not followed.
 
@@ -306,16 +368,23 @@ issues.
 python -m pytest
 ```
 
-**73 tests** across five files, with no network access, no skips and no xfails. The suite is
-deterministic across runs.
+**307 tests** across eleven files, with no network access and no xfails. The suite is
+deterministic across runs. One test — the live-core comparison in `test_core_parity.py` — is
+skipped on a bare checkout and runs only inside a Hermes checkout.
 
 | File | Tests | Focus |
 | --- | --- | --- |
 | `tests/test_frozen_oracles.py` | 17 | The adversarial expectation table. The contract. |
-| `tests/test_verifiers.py` | 20 | Each of the 12 check kinds, plus failure modes. |
+| `tests/test_verifiers.py` | 34 | Each of the 12 check kinds, plus failure modes. |
 | `tests/test_engine.py` | 14 | Capture, verification, propagation, freshness, reporting. |
-| `tests/test_plugin_integration.py` | 10 | Hooks, tools, slash command, manifest consistency. |
+| `tests/test_plugin_integration.py` | 12 | Hooks, tools, slash command, manifest consistency. |
 | `tests/test_extractor.py` | 12 | Extraction precision — including what must *not* be extracted. |
+| `tests/test_recovery.py` | 26 | Session-scoped blocking, `resolve`, `drop`, and the error invariant. |
+| `tests/test_ssrf.py` | 67 | The SSRF policy: schemes, ranges, metadata, redirects, DNS. |
+| `tests/test_command_policy.py` | 41 | Allowlist parsing, path refusal, resolution, minimal environment. |
+| `tests/test_config.py` | 33 | Every declared setting has an observable effect. |
+| `tests/test_injection.py` | 13 | Tool output is never captured; planted markers create nothing. |
+| `tests/test_core_parity.py` | 39 | SSRF verdicts match Hermes core's `is_safe_url`. |
 
 The oracle table covers the adversarial cases: correct evidence, contradictory evidence, missing
 evidence, timeout, rate limit, server error, staleness, propagation, unrelated decisions, restart
@@ -328,14 +397,15 @@ different ways of breaking the rule, with measured results:
 
 | Break the rule by | Result |
 | --- | --- |
-| Removing the `INVALIDATED` guard, so a failed re-check degrades a contradiction to `STALE` | **1 failed, 72 passed** — `test_transient_error_does_not_soften_a_contradiction` |
-| Mapping `error` to `INVALIDATED` (the naive rule) | **5 failed, 68 passed** — the four `UNVERIFIED` oracles plus `test_uncertainty_never_invalidates` |
+| Removing the `INVALIDATED` guard, so a failed re-check degrades a contradiction to `STALE` | **2 failed, 305 passed** — `test_transient_error_does_not_soften_a_contradiction`, `test_drop_is_not_resurrected_by_an_error_recheck` |
+| Mapping `error` to `INVALIDATED` (the naive rule) | **14 failed, 293 passed** — the four `UNVERIFIED` oracles, `test_uncertainty_never_invalidates`, and the six `test_error_paths_never_invalidate` cases |
 
-The first row is the more important one. It is the *only* test that catches a contradiction being
-softened by an outage, which is why the guard in `status_after_check` needs the suite to be run
-rather than the change reasoned about. [docs/TESTING.md](docs/TESTING.md) records both results,
-explains why `test_uncertainty_never_invalidates` does *not* catch the first case, and lists the
-suite's coverage gaps honestly.
+The first row is the more important one. `test_transient_error_does_not_soften_a_contradiction` is
+the only test that catches a contradiction being softened by an outage, which is why the guard in
+`status_after_check` needs the suite to be run rather than the change reasoned about.
+[docs/TESTING.md](docs/TESTING.md) records both results, explains why
+`test_uncertainty_never_invalidates` does *not* catch the first case, and lists the suite's
+coverage gaps honestly.
 
 ## License
 

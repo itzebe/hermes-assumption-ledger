@@ -7,28 +7,140 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Version status
 
-**There are no git tags and no GitHub releases for this project.** `v0.2.0` exists only as a
+**There are no git tags and no GitHub releases for this project.** `v0.2.2` exists only as a
 version string in `plugin.yaml`, `pyproject.toml`, `__init__.py` and `ledger/__init__.py`. The
 catalog entry pins a commit SHA, which is the authoritative reference for the reviewed code.
 
 That means the entries below describe the state of the code, not tagged artifacts. Use the commit
 SHA when you need an immutable reference.
 
-### What the pinned commit does and does not contain
+### What the pinned commit contains
 
-The catalog entry currently pins `388cf029ccc5324c3f246423c8d461aa93d60090`, which is the commit the
-maintainer reviewed for `v0.1.1`. That commit is a documentation commit; it does not contain the
-hardening described under `[0.2.0]` below. The catalog entry is re-pinned to the new commit as part
-of the same change set.
+The catalog entry pins `07bfaaaeb58fed1fa2d717f2c201e7bb17a61965`, the commit the maintainer
+reviewed for `v0.2.2`. It contains every fix described below, including the git-hardening change
+under `[0.2.2]`.
 
 The consequence for a reviewer: **the pinned SHA in the catalog must match the SHA that contains
-the fixes you are reviewing.** If it does not, the catalog is stale.
+the fixes you are reviewing.** If it does not, the catalog is stale. Verify the pin against the
+upstream entry, not this file:
+
+```bash
+hermes plugins info assumption-ledger     # prints "Pinned SHA: 07bfaaa…"
+```
 
 ### A note on version strings
 
 All four version strings (`plugin.yaml`, `pyproject.toml`, `__init__.py`, `ledger/__init__.py`) are
-`0.2.0` and agree. `tests/test_config.py::test_versions_agree_everywhere` fails if they diverge
+`0.2.2` and agree. `tests/test_config.py::test_versions_agree_everywhere` fails if they diverge
 again.
+
+## [Unreleased] — release synchronization and AI discoverability
+
+Documentation and discoverability only. **No production code changed**, and the version string
+stays `0.2.2`. This entry exists because the catalog-pinned release branch (`0.2.2`) is three
+commits ahead of `main` (`0.2.0`); this work brings the documentation and the discoverability
+surfaces up to date with the pinned code, and is the content of the release-sync pull request that
+fast-forwards `main`.
+
+### Added
+
+- `llms.txt` — a concise, machine-readable entry point for AI assistants and research tools, with
+  every claim tied to a location in the source.
+- `docs/AI_DISCOVERY.md` — the repository's public discovery surfaces, how to verify each, and an
+  explicit list of what is deliberately not done (no fabricated badges, no invented statistics, no
+  `robots.txt`, no claim of guaranteed indexing).
+- README: the first screen now leads with what it is, who needs it, the problem, how it works, what
+  makes it different and how to install it, for retrieval.
+
+### Fixed
+
+- **Stale catalog status removed.** README and `docs/INSTALLATION.md` claimed the plugin was "not
+  yet in the official catalog" and that the bare-name install fails. The catalog PR #150212 is
+  merged and the bare name installs the pinned commit; both documents now say so, and document the
+  `owner/repo` form's real behaviour (default branch, unreviewed custom source, install-time scan).
+- **Stale catalog pin corrected** from `388cf029…` (v0.1.1) to `07bfaaa…` (v0.2.2) in
+  `docs/INSTALLATION.md`.
+- **Stale configuration claim removed.** `docs/INSTALLATION.md` claimed the five declared settings
+  were never read; they are read at runtime through `PluginContext.get_config`. Corrected, and the
+  three dangling `#declared-configuration-options-are-not-currently-read-at-runtime` anchors in
+  `docs/CONFIGURATION.md`, `docs/TROUBLESHOOTING.md` and `docs/USER_GUIDE.md` are fixed.
+- **Doctor output corrected to 6 tools** (was "4 tool(s)") and **version strings corrected to
+  `0.2.2`** (were `0.2.0`) in README, `docs/INSTALLATION.md`, `docs/TESTING.md` and
+  `docs/TROUBLESHOOTING.md`.
+- **`docs/API_REFERENCE.md` documented six tools**, not four: added the missing `assumption_resolve`
+  and `assumption_drop` sections with real captured output.
+- `CHANGELOG.md` "known issues" and `CONTRIBUTING.md` now describe the state as of `0.2.2`, and the
+  resolved-KI list no longer offers already-fixed issues (KI-1, KI-3) as open work.
+- **Git filter-driver limitation documented consistently.** The maintainer's disclosure that a
+  repository-local `clean`/`smudge` filter driver still applies to `git status` is now stated in
+  `README.md`, `docs/SECURITY.md`, `docs/VERIFICATION_AND_SAFETY.md` and `llms.txt`. `llms.txt`
+  previously overstated the git guarantee as preventing repository-controlled execution; it now
+  states the `core.fsmonitor`/`core.hooksPath` overrides, the minimal environment and
+  `--no-optional-locks`, the remaining filter-driver vector, and that git checks are not a complete
+  sandbox.
+- **Four dangling documentation anchors fixed.** `docs/SECURITY.md` (`#known-security-limitations`),
+  `docs/USER_GUIDE.md` (`#when-the-plugin-blocks-a-turn`), `docs/VERIFICATION_AND_SAFETY.md`
+  (`#command_succeeds-runs-an-arbitrary-argv`) and `CONTRIBUTING.md` (KI-6) pointed at headings that
+  no longer exist. The KI-6 row was removed from the "open issues" table because KI-6 is recorded as
+  resolved in `0.2.0`.
+
+## [0.2.2] — harden the git checks against repository-controlled execution
+
+Responds to the third `CHANGES_REQUESTED` review on catalog PR #150212, which reviewed `87a2827c`.
+**This is a security fix; upgrade deliberately.**
+
+### Security
+
+- **The git checks no longer let a repository choose a program to run through ``core.fsmonitor`` or
+  ``core.hooksPath``.** ``core.fsmonitor`` is git configuration that names an executable git launches
+  while computing ``status``, and
+  ``core.hooksPath`` can redirect hook lookup at an attacker-chosen directory. A repository the
+  agent merely checked out could therefore execute code during what is meant to be a read-only
+  verification. ``_run_git`` now prepends ``-c core.fsmonitor=false -c core.hooksPath=/dev/null`` to
+  every git invocation; a command-line ``-c`` takes precedence over repository, worktree and global
+  configuration. ``git status`` also passes ``--no-optional-locks``. The separate ``clean``/``smudge``
+  filter-driver vector is not closed by these overrides and is documented as a residual limitation in
+  ``docs/SECURITY.md``.
+- **The git child no longer inherits the host environment.** ``_run_git`` passes
+  ``env=minimal_env()`` (the same minimal environment ``command_succeeds`` uses), so host variables
+  — API tokens, cloud credentials — are not visible to git or to any program git spawns.
+
+### Tests
+
+- New regression tests prove both protections and would fail without them: a repository configured
+  with an observable ``core.fsmonitor`` program, and a host-variable canary the git child must not
+  see. ``scripts/nonvacuous_check.py`` gains reverts ``R17`` and ``R18`` that remove each protection
+  and confirm the tests fail.
+
+## [0.2.1] — address the second maintainer security review
+
+Responds to the second `CHANGES_REQUESTED` review on catalog PR #150212, which reviewed `650533a2`.
+**This is a security fix; upgrade deliberately.**
+
+### Security
+
+- **`argv[0]` must be a bare executable name.** Previously `argv[0]` was reduced to its basename, so
+  a model-supplied path such as `/tmp/evil/git` or `./scripts/git` satisfied the `git` allowlist and
+  ran an attacker-controlled file. A path is now **refused** on either platform, the bare name must
+  be on the allowlist, the name is resolved with
+  `shutil.which(name, path=minimal_env()["PATH"])`, resolution failure fails closed, and the
+  **resolved absolute path** is executed instead of the model-supplied string.
+- **The allowlist is documented as a name filter, not a sandbox.** The README, `plugin.yaml`,
+  `docs/CONFIGURATION.md` and `docs/SECURITY.md` now state that the arguments are model-chosen, so
+  an allowed `node` still runs `node -e '<code>'` and an allowed `git` can still invoke an alias or
+  an external `core.editor`.
+
+### Fixed
+
+- **Re-injected blockers are session-scoped.** `render_reinjection` passed no session id to
+  `critical_blockers`, so a contradiction recorded in one session was announced in the re-injected
+  context of every other session. The `pre_llm_call` hook now passes the session id through, so the
+  blocker section is scoped exactly as the hard gate is.
+- **Relative imports.** The plugin entry point used top-level `from ledger import ...`, which only
+  worked because a test loader put the plugin directory on `sys.path`. Hermes does not; the entry
+  point now uses `from .ledger import ...`, and the tests load the module the way the real loader
+  does.
+- **Committed `.openhands/memory/` notes removed** and the directory added to `.gitignore`.
 
 ## [0.2.0] — address the maintainer security review
 
@@ -179,14 +291,14 @@ The state of the plugin as submitted to the Hermes plugin catalog. Untagged.
 
 ## Known issues
 
-State as of `0.2.0`. Issues fixed in this release are listed first so the review trail is intact.
+State as of `0.2.2`. Issues fixed in `0.2.0` are listed first so the review trail is intact.
 
 ### Resolved in 0.2.0
 
 | ID | Issue | Resolution |
 | --- | --- | --- |
 | KI-1 | Declared configuration options were never read | All five are now read through `PluginContext.get_config`, with `test_config.py` asserting an observable effect for each. |
-| KI-3 | Inconsistent version strings | All four strings are `0.2.0`; `test_versions_agree_everywhere` guards it. |
+| KI-3 | Inconsistent version strings | All four strings agree (currently `0.2.2`); `test_versions_agree_everywhere` guards it. |
 | KI-6 | `db_row_count` interpolated the `where` clause | The clause is validated against a simple-predicate grammar; a refusal returns `error`. |
 | KI-7 | `command_succeeds` ran an arbitrary `argv` | Execution is off by default, gated by a configured `command_allowlist`, and runs with a minimal environment. |
 | KI-10 | `http_json_field` stored the resolved value unbounded | Evidence now stores a bounded, type-tagged summary (`_summarize`); a string is truncated to 120 characters. A secret in a statement is still stored. |
@@ -205,7 +317,8 @@ is invisible in the default path — but an embedder setting only `cwd` will be 
 
 ### KI-4: No git tags or releases
 
-`v0.2.0` exists only in the manifest. There is no immutable tag to reference.
+`v0.2.2` exists only as a version string in the manifest and modules. There is no immutable tag to
+reference.
 
 **Workaround:** use the pinned commit SHA from the catalog entry.
 
@@ -256,10 +369,13 @@ caps verify-gate nudges, so a determined agent can proceed.
 behaviour and was removed because it stopped the turn the agent needed to investigate, everywhere
 at once.
 
-### KI-14: A command allowlist matches the basename only
+### KI-14: The allowlist constrains the executable, not the arguments
 
-An allowed name (`git`) is resolved through `PATH`. An attacker who can write an executable named
-`git` earlier on the path could be run.
+A bare allowlisted name is resolved through `PATH`, so an attacker who can write an executable
+named `git` earlier on the path could still be run — keep `PATH` under your control. More
+importantly, the allowlist restricts *which* program runs, not what it does with the model-chosen
+arguments: an allowed `node` still runs `node -e '<code>'`, and an allowed `git` can still invoke a
+configured alias or an external `core.editor`.
 
-**Impact:** the allowlist reduces the capability, it does not eliminate it. Keep it short and keep
-`PATH` under your control.
+**Impact:** the allowlist reduces the capability, it does not eliminate it. It is a name filter,
+not a sandbox. Keep it short and keep `PATH` under your control.

@@ -10,7 +10,7 @@ How to use Assumption Ledger day to day. This guide assumes it is already instal
 - [A complete worked example](#a-complete-worked-example)
 - [Reading the status view](#reading-the-status-view)
 - [Understanding the four statuses](#understanding-the-four-statuses)
-- [When the plugin blocks a turn](#when-the-plugin-blocks-a-turn)
+- [When the plugin warns you](#when-the-plugin-warns-you)
 - [Everyday recipes](#everyday-recipes)
 - [What to expect from re-injection](#what-to-expect-from-re-injection)
 - [Common mistakes](#common-mistakes)
@@ -441,8 +441,8 @@ instead.
 **Assuming the plugin scans for secrets.** It does not. See
 [SECURITY.md](SECURITY.md#sensitive-information-handling).
 
-**Trying to tune `freshness_seconds`.** The manifest declares it, but nothing reads it. See
-[CONFIGURATION.md](CONFIGURATION.md#declared-configuration-options-are-not-currently-read-at-runtime).
+**Trying to tune `freshness_seconds`.** It is read at runtime and configurable. See
+[CONFIGURATION.md](CONFIGURATION.md#declared-configuration-options).
 
 **Deleting the ledger to fix a problem.** The database is usually the evidence you need, not the
 cause. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).

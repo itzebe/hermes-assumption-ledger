@@ -32,7 +32,7 @@ bare checkout.
 
 | Component | File | Responsibility |
 | --- | --- | --- |
-| Hermes adapter | `__init__.py` | Plugin entry point. Owns the engine singleton, registers 4 hooks / 4 tools / 1 slash command, translates between Hermes payloads and engine calls. |
+| Hermes adapter | `__init__.py` | Plugin entry point. Owns the engine singleton, registers 4 hooks / 6 tools / 1 slash command, translates between Hermes payloads and engine calls. |
 | Engine | `ledger/engine.py` | The only place that decides a lifecycle status. Capture, verification, propagation, freshness, reporting. |
 | Model | `ledger/model.py` | Records (`Assumption`, `Evidence`, `Decision`, `CheckResult`), lifecycle constants, deterministic ID derivation, and the single status rule `status_after_check`. |
 | Extractor | `ledger/extractor.py` | Deterministic, rule-based extraction of assumptions from observable text. Conservative by design. |

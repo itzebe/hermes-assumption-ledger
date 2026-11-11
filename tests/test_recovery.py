@@ -83,6 +83,47 @@ def test_unrelated_decision_in_another_session_stays_open(engine, tmp_path):
     assert engine.store.get_decision(other.id).state == "open"
 
 
+def test_reinjection_blockers_are_session_scoped(engine, tmp_path):
+    """A blocker recorded in one session must not appear in another session's context.
+
+    ``render_reinjection`` is what pre_llm_call injects on every turn. Without the session
+    scope, a contradiction in s1 would be announced to s2 (and to a brand-new session) even
+    though no decision there depends on it.
+    """
+    broken = _record(engine, "the file scoped.txt exists", "scoped.txt", tmp_path)
+    engine.record_decision("work in s1", [broken.id], session_id="s1")
+    engine.verify(broken.id)  # INVALIDATED
+
+    # A live assumption is needed for the block section to render at all (pre-existing shape).
+    (tmp_path / "alive.txt").write_text("x")
+    alive = engine.add_assumption(
+        "the file alive.txt exists", {"kind": "file_exists", "path": str(tmp_path / "alive.txt")}
+    )
+    engine.verify(alive.id)  # VALID
+
+    s1 = engine.render_reinjection(session_id="s1")
+    assert "Invalidated assumptions blocking planned work:" in s1
+    assert "scoped.txt" in s1
+
+    # A different session sees the live assumption but no blocker — and so no mention of the
+    # invalidated assumption that blocks only s1.
+    s2 = engine.render_reinjection(session_id="s2")
+    assert "alive.txt" in s2, "a live assumption is in effect in every session"
+    assert "scoped.txt" not in s2
+    assert "Invalidated assumptions blocking planned work:" not in s2
+
+    # A session with no context at all is the unscoped view: it reports every block.
+    assert "Invalidated assumptions blocking planned work:" in engine.render_reinjection()
+
+
+def test_reinjection_without_a_session_still_lists_live_assumptions(engine, tmp_path):
+    """Omitting session_id must not drop the live-assumption list."""
+    (tmp_path / "live.txt").write_text("x")
+    engine.add_assumption("the file live.txt exists", {"kind": "file_exists", "path": str(tmp_path / "live.txt")})
+    engine.verify(engine.store.list_assumptions()[0].id)
+    assert "live.txt" in engine.render_reinjection()
+
+
 # 3. The affected session can inspect and re-verify ------------------------------------------------
 def test_affected_session_can_inspect_the_assumption(engine, tmp_path):
     asm = _record(engine, "the file insp.txt exists", "insp.txt", tmp_path)
