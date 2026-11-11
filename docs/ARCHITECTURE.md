@@ -7,7 +7,7 @@ so you can read it yourself.
 - [Design in one paragraph](#design-in-one-paragraph)
 - [Components](#components)
 - [Module responsibilities](#module-responsibilities)
-- [Data model](#data model)
+- [Data model](#data-model)
 - [Data flow](#data-flow)
 - [Assumption capture flow](#assumption-capture-flow)
 - [Verification flow](#verification-flow)
